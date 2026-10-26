@@ -12,7 +12,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--validation", action="store_true", help="Build a separate bundle without replacing the running prototype")
 args = parser.parse_args()
 root = pathlib.Path(__file__).resolve().parents[1]
-subprocess.run(["swift", "build", "--package-path", str(root), "-c", "release"], check=True)
+subprocess.run(["swift", "build", "--package-path", str(root), "-c", "release"] + (["-Xswiftc", "-DEXPLORER_DELETION_TESTS"] if args.validation else []), check=True)
 bin_dir = pathlib.Path(subprocess.check_output(
     ["swift", "build", "--package-path", str(root), "-c", "release", "--show-bin-path"], text=True
 ).strip())

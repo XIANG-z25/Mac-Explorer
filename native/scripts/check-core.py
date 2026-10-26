@@ -4,12 +4,17 @@ import argparse
 import pathlib
 import platform
 import subprocess
+import sys
 import tempfile
 
 root = pathlib.Path(__file__).resolve().parents[1]
-names = ["CoreChecks", "FileActionChecks", "MetadataTransferChecks", "ServerSideTransferChecks", "TransferTelemetryChecks", "PropertiesChecks", "WatcherChecks", "QuickAccessChecks", "LatestCoreChecks", "NetworkChecks", "TrashChecks", "SystemChecks"]
+names = ["CoreChecks", "ColumnChecks", "NetworkDeletionChecks", "FileActionChecks", "MetadataTransferChecks", "ServerSideTransferChecks", "TransferTelemetryChecks", "PropertiesChecks", "WatcherChecks", "QuickAccessChecks", "LatestCoreChecks", "NetworkChecks", "TrashChecks", "SystemChecks"]
 parser = argparse.ArgumentParser()
-parser.add_argument('checks', nargs='*', choices=names)
+def check_name(value):
+    if value not in names:
+        raise argparse.ArgumentTypeError('Unknown check: ' + value)
+    return value
+parser.add_argument('checks', nargs='*', type=check_name, metavar='CHECK', help=', '.join(names))
 selected = parser.parse_args().checks or names
 with tempfile.TemporaryDirectory(prefix="explorer-native-checks-") as temporary:
     sources = sorted((root / "Sources" / "ExplorerCore").glob("*.swift"))
@@ -19,6 +24,10 @@ with tempfile.TemporaryDirectory(prefix="explorer-native-checks-") as temporary:
         subprocess.run([
             "xcrun", "swiftc", "-parse-as-library", "-swift-version", "5", "-O",
             "-target", f"{platform.machine()}-apple-macos13.0",
+            *(["-D", "EXPLORER_DELETION_TESTS"] if name == "NetworkDeletionChecks" else []),
             *map(str, sources + extra), str(root / "scripts" / f"{name}.swift"), "-o", str(executable),
         ], check=True)
         subprocess.run([str(executable)] + ([str(root / "Resources" / "locales")] if name == "LatestCoreChecks" else []), check=True)
+
+if "NetworkDeletionChecks" in selected:
+    subprocess.run([sys.executable, "-I", str(root / "scripts/check-deletion-api.py")], check=True)
