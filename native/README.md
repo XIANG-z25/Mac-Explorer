@@ -59,7 +59,7 @@ open 'native/output/validation/Mac Explorer.app'
 - 撤销和重做记录保存操作完成后目标的设备、inode 和出生时间；路径被外部替换后拒绝操作。撤销新建/复制仍进入回收站，恢复原位置拒绝碰撞；部分失败保留未完成记录供重试。重做恢复撤销后保留的实际对象，不从可能变化的原始来源重新复制；成功的新操作清空重做分支，历史仅在当前窗口会话保存，最多 100 组新操作。拒绝的网络删除不改变文件历史和剪贴板。
 - 回收站来源记录同时绑定条目、回收站根和原父目录身份；父目录被链接替换时拒绝自动还原，可另选目录。清空只操作确认时顶层条目及根身份仍匹配的项目，不清理随后新增的顶层项目；链接只删除自身。
 - 解压拒绝路径穿越、链接越界、覆盖和源归档覆盖；Git/SVN 操作限制在所选仓库并拒绝陈旧预览，丢弃前创建备份。
-- 复制和跨卷移动使用系统复制，恢复并读回创建/修改日期；属性无法保留时提供重试、继续、跳过和取消。SMB 不支持排他提交时，排他创建目标并经描述符复制；只有目标及来源复核通过后才清理来源，不覆盖已有目标，不增加应用层全文件哈希。取消或失败无法清理的本次副本会报告实际路径。
+- 复制和跨卷移动使用系统复制，恢复并读回创建/修改日期；属性无法保留时提供重试、继续、跳过和取消。SMB 目标及不支持排他提交的卷均排他创建最终名称并经描述符复制；SMB 先刷入数据再写属性，避免暂存改名导致文件标识变化。传输中的目标副本可见；只有目标及来源复核通过后才清理来源，不覆盖已有目标，不增加应用层全文件哈希。取消或失败无法清理的本次副本会报告实际路径。
 - 跨卷复制/移动不是原子事务；网络断线、外部并发改写和操作间竞争无法只靠临时目录检查完成全部实机验收。
 
 复制/跨共享移动的窗口显示当前文件字节数和已确认字节速率，并单独显示属性处理、验证和提交阶段。同服务器跨共享主数据可使用独立 SMB 客户端的服务端复制；详见[实现与验收记录](../docs/SERVER_SIDE_TRANSFER.md)。每次操作完成时后台写入不含路径或凭据的阶段耗时报告，最多保留 20 份；验证版位于 `native/output/validation/transfer-logs/`，日常版位于 `~/Library/Caches/<Bundle ID>/transfer-logs/`。
@@ -71,6 +71,7 @@ open 'native/output/validation/Mac Explorer.app'
 ```sh
 python3 -I native/scripts/check-core.py
 python3 -I native/scripts/check-deletion-ui.py
+python3 -I native/scripts/check-transfer-ui.py
 python3 -I native/scripts/check-trash.py
 python3 -I native/scripts/check-vcs.py
 python3 -I native/scripts/check-archives.py

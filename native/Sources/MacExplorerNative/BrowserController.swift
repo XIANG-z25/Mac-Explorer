@@ -126,6 +126,7 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
   let errorClose = ExplorerButton(icon: "close"), exitSearch = ExplorerButton(title: NL("退出搜索"))
   let privacySettings = ExplorerButton(title: NL("前往设置"))
   let emptyIcon = NSImageView()
+  private let emptyState = ExplorerEmptyStateView()
   private(set) var collectionLayout = ExplorerCollectionLayout()
   let addTabButton = ExplorerButton(icon: "plus")
   let backButton = ExplorerButton(icon: "arrowLeft"), forwardButton = ExplorerButton(icon: "arrowRight"), upButton = ExplorerButton(icon: "arrowUp"), refreshButton = ExplorerButton(icon: "refresh")
@@ -204,7 +205,7 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
     sizeSlider.setAccessibilityLabel(NL("图标大小"))
     detailViewButton.onPress = { [weak self] in self?.setView(.details) }; detailViewButton.toolTip = NL("详细信息视图")
     iconViewButton.onPress = { [weak self] in self?.setView(.icons, size: 64) }; iconViewButton.toolTip = NL("大图标视图")
-    emptyIcon.imageScaling = .scaleProportionallyUpOrDown; content.addSubview(emptyIcon); content.addSubview(emptyLabel)
+    emptyIcon.imageScaling = .scaleProportionallyUpOrDown; content.addSubview(emptyState); emptyState.addSubview(emptyIcon); emptyState.addSubview(emptyLabel)
     spinner.style = .spinning; spinner.controlSize = .small; spinner.isDisplayedWhenStopped = false; content.addSubview(spinner)
     content.addSubview(loadingView); loadingView.setAccessibilityLabel(NL("正在读取文件"))
     emptyLabel.alignment = .center
@@ -391,6 +392,7 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
       column.width = detailColumns.automatic ? (id == "name" ? max(150, available - used) : metadata[id] ?? 100) : detailColumns.widths[id] ?? 100
     }
     syncingColumns = false
+    emptyState.frame = content.bounds
     emptyIcon.frame = NSRect(x: (content.bounds.width - 68) / 2, y: max(40, content.bounds.height * 0.35 - 60), width: 68, height: 68)
     emptyLabel.frame = NSRect(x: 20, y: emptyIcon.frame.maxY + 18, width: content.bounds.width - 40, height: 24)
     spinner.frame = NSRect(x: (content.bounds.width - 16) / 2, y: emptyIcon.frame.minY, width: 16, height: 16)
@@ -791,7 +793,7 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
     sizeSlider.doubleValue = Double(iconSize); sizeValue.stringValue = "\(Int(iconSize))"
     syncingSelection = true
     tableScroll.isHidden = mode != .details || loading || entries.isEmpty
-    collectionScroll.isHidden = mode == .details || loading || entries.isEmpty
+    collectionScroll.isHidden = mode == .details || loading
     // Hidden views can still receive layout callbacks after a directory or layout change.
     table.reloadData(); collection.reloadData()
     let selected = entries.indices.filter { selectedPaths.contains(entries[$0].id) }
@@ -807,7 +809,7 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
     loadingView.isHidden = !loading || special
     spinner.stopAnimation(nil); spinner.isHidden = true
     tableScroll.isHidden = mode != .details || loading || entries.isEmpty
-    collectionScroll.isHidden = mode == .details || loading || entries.isEmpty
+    collectionScroll.isHidden = mode == .details || loading
     if lastError == nil { lastError = operationError }
     errorBar.color = lastError == nil ? ExplorerPalette.surface : ExplorerPalette.errorSurface
     errorLabel.textColor = lastError == nil ? ExplorerPalette.text : ExplorerPalette.errorText

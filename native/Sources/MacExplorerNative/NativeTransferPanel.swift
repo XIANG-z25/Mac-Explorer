@@ -15,8 +15,11 @@ final class NativeTransferPanel: NSObject, NSWindowDelegate {
   private var phase: FileTransferPhase = .preparing
   private var latest: FileTransferProgress?
   private var speedTimer: Timer?
+  let showsWindows: Bool
+  private(set) var pendingAlert: (NSAlert, (NSApplication.ModalResponse) -> Void)?
   var control: FileTransferControl?
-  init(parent: NSWindow?) {
+  init(parent: NSWindow?, showsWindows: Bool = true) {
+    self.showsWindows = showsWindows
     window = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 440, height: 176), styleMask: [.titled, .closable], backing: .buffered, defer: false)
     super.init()
     window.title = NL("传输文件"); window.isReleasedWhenClosed = false; window.delegate = self
@@ -32,10 +35,13 @@ final class NativeTransferPanel: NSObject, NSWindowDelegate {
     for view in [label, progress, statistics, cancel] { window.contentView?.addSubview(view) }
     if let parent { window.setFrameOrigin(NSPoint(x: parent.frame.midX - 220, y: parent.frame.midY - 88)) } else { window.center() }
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-      guard let self, !self.finished else { return }; self.window.orderFront(nil)
+      guard let self, self.showsWindows, !self.finished else { return }; self.window.orderFront(nil)
     }
   }
-  @objc private func cancelTransfer() { control?.cancel(); cancel.isEnabled = false; label.stringValue = NL("正在取消…") }
+  @objc private func cancelTransfer() {
+    control?.cancel(); cancel.isEnabled = false; label.stringValue = NL("正在取消…")
+    if let (alert, _) = pendingAlert { resolve(alert, response: .abort) }
+  }
   func windowShouldClose(_ sender: NSWindow) -> Bool { if finished { return true }; cancelTransfer(); return false }
   func update(_ value: FileTransferProgress) {
     guard !finished, control?.isCancelled != true else { return }
@@ -72,10 +78,30 @@ final class NativeTransferPanel: NSObject, NSWindowDelegate {
     }
     statistics.stringValue = ExplorerFormat.size(value.completedBytes) + " / " + ExplorerFormat.size(value.totalBytes) + " · " + NL("速度：{0}", speed)
   }
-  func close() { finished = true; speedTimer?.invalidate(); speedTimer = nil; window.close(); control = nil }
+  func close() {
+    finished = true; speedTimer?.invalidate(); speedTimer = nil
+    if let (alert, _) = pendingAlert { resolve(alert, response: .abort) }
+    window.close(); control = nil
+  }
+  func present(_ alert: NSAlert, completion: @escaping (NSApplication.ModalResponse) -> Void) {
+    guard !finished, control?.isCancelled != true, pendingAlert == nil else { completion(.abort); return }
+    // Keep the sheet and its reply together so closing/cancelling cannot strand the worker.
+    pendingAlert = (alert, completion)
+    guard showsWindows else { return }
+    window.orderFront(nil)
+    alert.beginSheetModal(for: window) { [weak self, weak alert] response in
+      guard let alert else { return }; self?.resolve(alert, response: response)
+    }
+  }
+  func resolve(_ alert: NSAlert, response: NSApplication.ModalResponse) {
+    guard let (active, completion) = pendingAlert, active === alert else { return }
+    pendingAlert = nil
+    if alert.window.sheetParent != nil { window.endSheet(alert.window, returnCode: response) }
+    alert.window.orderOut(nil)
+    completion(response)
+  }
   func problem(_ value: FileTransferProblem, completion: @escaping (FileTransferDecision) -> Void) {
     guard !finished, control?.isCancelled != true else { completion(.cancel); return }
-    window.orderFront(nil)
     let alert = NSAlert(); alert.messageText = value.propertyLoss ? NL("无法保留全部文件属性") : NL("操作中断")
     alert.informativeText = value.source.lastPathComponent + "\n" + value.message
     var decisions: [FileTransferDecision] = [.retry]
@@ -89,7 +115,7 @@ final class NativeTransferPanel: NSObject, NSWindowDelegate {
     alert.addButton(withTitle: NL("跳过")); decisions.append(.skip)
     alert.addButton(withTitle: NL("取消")); decisions.append(.cancel)
     alert.buttons.last?.keyEquivalent = "\u{1b}"
-    alert.beginSheetModal(for: window) { response in
+    present(alert) { response in
       let index = response.rawValue - NSApplication.ModalResponse.alertFirstButtonReturn.rawValue
       completion(decisions.indices.contains(index) ? decisions[index] : .cancel)
     }
@@ -105,11 +131,11 @@ private final class TransferDecisionReply: @unchecked Sendable {
 }
 
 extension BrowserController {
-  func runTransferOperation(recordUndo: Bool = true, completion: ((FileActionResult) -> Void)? = nil, _ operation: @escaping @Sendable (FileTransferControl) -> FileActionResult) {
+  func runTransferOperation(recordUndo: Bool = true, panel: NativeTransferPanel? = nil, completion: ((FileActionResult) -> Void)? = nil, _ operation: @escaping @Sendable (FileTransferControl) -> FileActionResult) {
     guard !busy else { return }
-    let panel = NativeTransferPanel(parent: view.window)
+    let panel = panel ?? NativeTransferPanel(parent: view.window)
     let smoke = ProcessInfo.processInfo.arguments.contains("--smoke-test")
-    let diagnostics = smoke ? nil : TransferDiagnostics()
+    let diagnostics = smoke || !panel.showsWindows ? nil : TransferDiagnostics()
     let logDirectory = Bundle.main.bundleIdentifier == "local.macexplorer.native-validation"
       ? Bundle.main.bundleURL.deletingLastPathComponent().appendingPathComponent("transfer-logs")
       : FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!.appendingPathComponent(Bundle.main.bundleIdentifier ?? "local.macexplorer").appendingPathComponent("transfer-logs")
@@ -125,7 +151,7 @@ extension BrowserController {
       DispatchQueue.main.async {
         guard let panel else { reply.semaphore.signal(); return }
         let alert = NSAlert(); alert.messageText = NL("无法保存登录信息"); alert.informativeText = NL("钥匙串错误码：{0}", String(code))
-        alert.beginSheetModal(for: panel.window) { _ in reply.semaphore.signal() }
+        panel.present(alert) { _ in reply.semaphore.signal() }
       }
       reply.semaphore.wait()
     })

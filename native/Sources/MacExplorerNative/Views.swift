@@ -51,6 +51,11 @@ final class ExplorerLoadingView: SurfaceView {
   }
 }
 
+final class ExplorerEmptyStateView: NSView {
+  override var isFlipped: Bool { true }
+  override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
 final class ExplorerRootView: SurfaceView {
   var onLayout: (() -> Void)?
   override func layout() { super.layout(); onLayout?() }
@@ -391,11 +396,31 @@ final class ExplorerCollectionLayout: NSCollectionViewLayout {
   override var collectionViewContentSize: NSSize { contentSize }
   override func shouldInvalidateLayout(forBoundsChange newBounds: NSRect) -> Bool { true }
   override func layoutAttributesForItem(at indexPath: IndexPath) -> NSCollectionViewLayoutAttributes? {
-    guard indexPath.item < count else { return nil }
+    guard indexPath.section == 0, indexPath.item >= 0, indexPath.item < count else { return nil }
     let column = mode == .list ? indexPath.item / rows : indexPath.item % columns
     let row = mode == .list ? indexPath.item % rows : indexPath.item / columns
     let value = NSCollectionViewLayoutAttributes(forItemWith: indexPath)
     value.frame = NSRect(x: inset.width + CGFloat(column) * (cell.width + gap.width), y: inset.height + CGFloat(row) * (cell.height + gap.height), width: cell.width, height: cell.height)
+    return value
+  }
+  override func layoutAttributesForDropTarget(at point: NSPoint) -> NSCollectionViewLayoutAttributes? {
+    guard NSRect(origin: .zero, size: contentSize).contains(point) else { return nil }
+    let column = max(0, Int((point.x - inset.width) / (cell.width + gap.width)))
+    let row = max(0, Int((point.y - inset.height) / (cell.height + gap.height)))
+    let item = mode == .list ? column * rows + row : row * columns + column
+    if let value = layoutAttributesForItem(at: IndexPath(item: item, section: 0)), value.frame.contains(point) { return value }
+    return layoutAttributesForInterItemGap(before: IndexPath(item: count, section: 0))
+  }
+  override func layoutAttributesForInterItemGap(before indexPath: IndexPath) -> NSCollectionViewLayoutAttributes? {
+    guard indexPath.section == 0, (0...count).contains(indexPath.item) else { return nil }
+    let value = NSCollectionViewLayoutAttributes(forInterItemGapBefore: indexPath)
+    let item = layoutAttributesForItem(at: indexPath) ?? layoutAttributesForItem(at: IndexPath(item: count - 1, section: 0))
+    let frame = item?.frame ?? NSRect(origin: NSPoint(x: inset.width, y: inset.height), size: cell)
+    if mode == .content {
+      value.frame = NSRect(x: frame.minX, y: indexPath.item < count || count == 0 ? frame.minY : frame.maxY, width: frame.width, height: 3)
+    } else {
+      value.frame = NSRect(x: indexPath.item < count || count == 0 ? frame.minX : frame.maxX, y: frame.minY, width: 3, height: frame.height)
+    }
     return value
   }
   override func layoutAttributesForElements(in rect: NSRect) -> [NSCollectionViewLayoutAttributes] {
