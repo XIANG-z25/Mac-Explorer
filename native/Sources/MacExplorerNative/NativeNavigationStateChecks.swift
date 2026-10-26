@@ -3,11 +3,14 @@ import ExplorerCore
 
 @MainActor
 enum NativeNavigationStateChecks {
-  static func run() async throws -> [String] {
+  static func run(showsWindows: Bool = true) async throws -> [String] {
     let fm = FileManager.default, root = fm.temporaryDirectory.appendingPathComponent("native-navigation-state-" + UUID().uuidString)
     for i in 0..<320 { try fm.createDirectory(at: root.appendingPathComponent(String(format: "Folder %03d", i)), withIntermediateDirectories: true) }
     let child = root.appendingPathComponent("Folder 220")
     for i in 0..<120 { try Data("fixture".utf8).write(to: child.appendingPathComponent(String(format: "Item %03d.txt", i))) }
+    let single = root.appendingPathComponent("Folder 000"), pair = single.appendingPathComponent("Only folder")
+    try fm.createDirectory(at: pair.appendingPathComponent("First folder"), withIntermediateDirectories: true)
+    try Data("fixture".utf8).write(to: pair.appendingPathComponent("Second.txt"))
     let suite = "local.macexplorer.navigation-state." + UUID().uuidString, defaults = UserDefaults(suiteName: suite)!
     defaults.set(["view": "details", "iconSize": 64, "sort": "name", "ascending": true], forKey: "defaultFolderView")
     defaults.set(false, forKey: "versionControl")
@@ -15,8 +18,9 @@ enum NativeNavigationStateChecks {
     let window = NSWindow(contentRect: NSRect(x: 100, y: 120, width: 1100, height: 740), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
     window.isReleasedWhenClosed = false
     let browser = BrowserController(initial: root, defaults: defaults); browser.home = root
-    browser.filePasteboard = NSPasteboard(name: .init(suite)); window.contentViewController = browser; window.makeKeyAndOrderFront(nil)
-    defer { browser.stopObserving(); window.close(); key?.makeKeyAndOrderFront(nil); browser.filePasteboard.releaseGlobally(); defaults.removePersistentDomain(forName: suite); try? fm.removeItem(at: root) }
+    browser.filePasteboard = NSPasteboard(name: .init(suite)); window.contentViewController = browser
+    if showsWindows { window.makeKeyAndOrderFront(nil) } else { browser.reload() }
+    defer { browser.stopObserving(); window.close(); if showsWindows { key?.makeKeyAndOrderFront(nil) }; browser.filePasteboard.releaseGlobally(); defaults.removePersistentDomain(forName: suite); try? fm.removeItem(at: root) }
     var checks: [String] = []
     func check(_ ok: Bool, _ text: String) throws { guard ok else { throw NativeSmoke.Failure(description: text) }; checks.append(text); print("PASS navigation state: " + text) }
     func loaded(_ target: URL) async throws {
@@ -30,6 +34,13 @@ enum NativeNavigationStateChecks {
     func scroll() -> NSScrollView { browser.mode == .details ? browser.tableScroll : browser.collectionScroll }
     func frame(_ index: Int) -> NSRect { browser.mode == .details ? browser.table.rect(ofRow: index) : browser.collectionLayout.layoutAttributesForItem(at: IndexPath(item: index, section: 0))!.frame }
     func origin() -> NSPoint { scroll().contentView.bounds.origin }
+    func top() -> NSPoint { NSPoint(x: 0, y: browser.mode == .details ? -(browser.table.headerView?.frame.height ?? 0) : 0) }
+    func firstRowVisible() -> Bool {
+      guard browser.table.numberOfRows > 0 else { return false }
+      let row = browser.table.rect(ofRow: 0), visible = browser.table.visibleRect
+      let headerBottom = browser.table.headerView.map { browser.table.convert($0.bounds, from: $0).maxY } ?? visible.minY
+      return row.minY >= max(visible.minY, headerBottom) && row.maxY <= visible.maxY
+    }
     func close(_ a: NSPoint, _ b: NSPoint) -> Bool { abs(a.x - b.x) < 2 && abs(a.y - b.y) < 2 }
     func position(_ index: Int) -> NSPoint {
       let rect = frame(index), view = scroll(), document = view.documentView!
@@ -38,13 +49,26 @@ enum NativeNavigationStateChecks {
       return origin()
     }
     func select(_ path: String) { browser.selectedPaths = [path]; browser.updateMode(persist: false); window.contentView?.layoutSubtreeIfNeeded() }
+    try await loaded(root)
+    try check(browser.mode == .details && firstRowVisible(), "Default Details displays the complete first folder below its header on initial load")
+    for compact in [false, true] {
+      browser.compact = compact; browser.updateMode(persist: false)
+      for target in [single, pair] {
+        browser.openTab(at: target); try await loaded(target)
+        try check(firstRowVisible(), "Details with compact=\(compact) shows the complete first row in a \(browser.entries.count)-item folder")
+        browser.reload(); try await loaded(target)
+        try check(firstRowVisible(), "Refreshing a short Details folder preserves a fully visible first row")
+        browser.closeTab(); try await loaded(root)
+      }
+    }
+    browser.compact = false; browser.updateMode(persist: false)
     let layouts: [(ExplorerLayoutMode, CGFloat, String)] = [(.details,64,"details"),(.icons,128,"extra-large icons"),(.icons,96,"large icons"),(.icons,64,"medium icons"),(.icons,32,"small icons"),(.list,32,"list"),(.tiles,64,"tiles"),(.content,64,"content")]
     for (layout, size, title) in layouts {
       browser.navigate(to: root); try await loaded(root); browser.setView(layout, size: size); window.contentView?.layoutSubtreeIfNeeded()
       select(child.path); let parentPoint = position(220)
       try check(parentPoint.x > 100 || parentPoint.y > 100, title + ": fixture genuinely scrolls away from the first page; origin=\(parentPoint), document=\(scroll().documentView!.bounds.size), frame=\(scroll().documentView!.frame.size), layout=\(browser.collectionLayout.collectionViewContentSize), target=\(frame(220)), mode=\(browser.mode.rawValue), mask=\(browser.collection.autoresizingMask.rawValue), owner=\(browser.collection.collectionViewLayout === browser.collectionLayout)")
       browser.openSelected(); try await loaded(child)
-      try check(close(origin(), .zero), title + ": entering a folder starts at the top instead of inheriting its parent scroll")
+      try check(close(origin(), top()) && (layout != .details || firstRowVisible()), title + ": entering a folder starts at its actual top with the first row clear of the header")
       browser.setView(layout, size: size); window.contentView?.layoutSubtreeIfNeeded()
       let item = browser.entries[80].id; select(item); let childPoint = position(80)
       browser.back(); try await loaded(root)
@@ -58,7 +82,7 @@ enum NativeNavigationStateChecks {
     }
     browser.setView(.details); select(child.path); let parentPoint = position(220)
     browser.openTab(at: root); try await loaded(root)
-    try check(close(origin(), .zero) && browser.selectedPaths.isEmpty, "A new tab starts independently even at the same directory")
+    try check(close(origin(), top()) && firstRowVisible() && browser.selectedPaths.isEmpty, "A new Details tab starts independently with a fully visible first row")
     let other = root.appendingPathComponent("Folder 070"); select(other.path); let otherPoint = position(70)
     browser.switchTab(to: 0); try await loaded(root)
     try check(close(origin(), parentPoint) && browser.selectedPaths == [child.path], "Switching back restores the first tab scroll and selection")
@@ -74,7 +98,7 @@ enum NativeNavigationStateChecks {
     // A new history branch must not inherit discarded forward-entry selection.
     browser.openSelected(); try await loaded(child); browser.back(); try await loaded(root)
     browser.navigate(to: other); try await loaded(other)
-    try check(browser.selectedPaths.isEmpty && close(origin(), .zero), "Branching history clears discarded forward-location state")
+    try check(browser.selectedPaths.isEmpty && close(origin(), top()), "Branching history clears discarded forward-location state")
     browser.up(); try await loaded(root)
     try check(browser.selectedPaths == [other.path] && browser.table.visibleRect.intersects(frame(70)), "Up reveals an ancestor's actual immediate child even when it was outside the saved viewport")
     browser.navigate(to: root); try await loaded(root); browser.setView(.details); select(child.path); let mixedPoint = position(220)
@@ -101,7 +125,7 @@ enum NativeNavigationStateChecks {
     // Only temporary fixtures are changed; deleted children must not become phantom selections.
     let doomed = root.appendingPathComponent("Folder 300"); select(doomed.path); _ = position(300)
     browser.openSelected(); try await loaded(doomed); try fm.removeItem(at: doomed); browser.up(); try await loaded(root)
-    try check(browser.selectedPaths.isEmpty && origin().y.isFinite && origin().y >= 0, "A removed child is pruned from selection and the parent scroll remains valid")
+    try check(browser.selectedPaths.isEmpty && origin().y.isFinite && origin().y >= top().y, "A removed child is pruned from selection and the parent scroll remains valid")
     try check(try Data(contentsOf: child.appendingPathComponent("Item 080.txt")) == Data("fixture".utf8), "Navigation checks preserve fixture contents")
     return checks
   }

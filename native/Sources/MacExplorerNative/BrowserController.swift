@@ -641,13 +641,15 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
     pendingLocationState = nil
     view.layoutSubtreeIfNeeded(); collection.layoutSubtreeIfNeeded()
     let scroll = mode == .details ? tableScroll : collectionScroll
-    var point = state.layout == locationLayout ? state.origin : .zero
+    // The table's pinned header occupies the negative part of the clip coordinates.
+    let top = mode == .details ? -(table.headerView?.frame.height ?? 0) : 0
+    var point = state.layout == locationLayout ? state.origin : NSPoint(x: 0, y: top)
     if state.layout == locationLayout, let anchor = state.anchor, let index = entries.firstIndex(where: { $0.id == anchor }), let frame = itemFrame(index) {
       point = NSPoint(x: frame.minX - state.anchorOffset.x, y: frame.minY - state.anchorOffset.y)
     }
     if let document = scroll.documentView {
       point.x = min(max(0, point.x), max(0, document.bounds.width - scroll.contentSize.width))
-      point.y = min(max(0, point.y), max(0, document.bounds.height - scroll.contentSize.height))
+      point.y = min(max(top, point.y), max(top, document.bounds.height - scroll.contentSize.height))
       scroll.contentView.scroll(to: point); scroll.reflectScrolledClipView(scroll.contentView)
       if let path = state.revealPath, let index = entries.firstIndex(where: { $0.id == path }), let frame = itemFrame(index), !scroll.contentView.bounds.contains(frame) { document.scrollToVisible(frame) }
     }
