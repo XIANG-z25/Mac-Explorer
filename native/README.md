@@ -73,6 +73,7 @@ python3 -I native/scripts/check-core.py
 python3 -I native/scripts/check-deletion-ui.py
 python3 -I native/scripts/check-transfer-ui.py
 python3 -I native/scripts/check-navigation-ui.py
+python3 -I native/scripts/check-icons.py
 python3 -I native/scripts/check-trash.py
 python3 -I native/scripts/check-vcs.py
 python3 -I native/scripts/check-archives.py

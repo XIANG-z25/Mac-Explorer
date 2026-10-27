@@ -221,7 +221,9 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
       guard let self, self.vcsStatus != nil, self.view.window?.isKeyWindow == true, !self.automaticRefreshBlocked else { return }; self.refreshVCS()
     }
     focusObserver = NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification, object: nil, queue: .main) { [weak self] note in
-      guard let self, note.object as? NSWindow === self.view.window, !self.automaticRefreshBlocked else { return }; self.refreshVCS(force: true)
+      guard let self, note.object as? NSWindow === self.view.window else { return }
+      self.refreshVisibleIcons()
+      if !self.automaticRefreshBlocked { self.refreshVCS(force: true) }
     }
     paletteObserver = NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in self?.view.needsLayout = true }
   }
@@ -721,6 +723,17 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
   }
   private var automaticRefreshBlocked: Bool {
     busy || loading || renamingEntry != nil || addressBar.editing || NSEvent.pressedMouseButtons != 0 || view.window.map { ExplorerDialogs.isPresenting(in: $0) || $0.attachedSheet != nil } == true
+  }
+  private func refreshVisibleIcons() {
+    guard !stopped, !loading else { return }
+    if mode == .details {
+      guard let column = table.tableColumns.firstIndex(where: { $0.identifier.rawValue == "name" }) else { return }
+      let rows = table.rows(in: table.visibleRect)
+      guard rows.location != NSNotFound else { return }
+      for row in rows.location..<NSMaxRange(rows) { (table.view(atColumn: column, row: row, makeIfNecessary: false) as? NameCell)?.icon.refresh() }
+    } else {
+      for item in collection.visibleItems() { (item as? IconItem)?.icon.refresh() }
+    }
   }
   private func refreshAutomatically() {
     guard !stopped, refreshPending, directory.isFileURL, !searchActive else { return }

@@ -96,7 +96,9 @@ final class IconLoader {
   init() { cache.countLimit = 512 }
   func clear() { cache.removeAllObjects() }
   func request(_ entry: FileEntry, pixels: Int, completion: @escaping (NSImage) -> Void) -> () -> Void {
-    let key = "\(entry.url.path)|\(entry.modified?.timeIntervalSince1970 ?? 0)|\(pixels)"
+    // A retained file URL can keep its previous Launch Services binding cached.
+    let application = NSWorkspace.shared.urlForApplication(toOpen: URL(fileURLWithPath: entry.url.path))?.path ?? ""
+    let key = "\(entry.url.path)|\(entry.modified?.timeIntervalSince1970 ?? 0)|\(pixels)|\(application)"
     if let image = cache.object(forKey: key as NSString) { completion(image); return {} }
     let id = UUID()
     if pending[key] == nil { queue.append(key); pending[key] = []; sources[key] = (entry.url.path, pixels) }
@@ -126,7 +128,10 @@ final class IconLoader {
 final class FileIconView: NSImageView {
   private var cancel: (() -> Void)?
   private var vcsMark: String?
+  private var entry: FileEntry?
+  private var pixels = 64
   func show(_ entry: FileEntry, pixels: Int = 64) {
+    self.entry = entry; self.pixels = pixels
     cancel?(); contentTintColor = nil; vcsMark = entry.vcsMark; needsDisplay = true
     if entry.isDirectory && !entry.isPackage { image = ExplorerIcons.folder(size: 128, url: entry.url); cancel = nil; return }
     image = ExplorerIcons.image("document", size: 64, color: ExplorerPalette.secondary)
@@ -142,7 +147,8 @@ final class FileIconView: NSImageView {
     let dimensions = text.size(withAttributes: [.font: font])
     text.draw(at: NSPoint(x: frame.midX - dimensions.width / 2, y: frame.midY - dimensions.height / 2), withAttributes: [.font: font, .foregroundColor: NSColor.white])
   }
-  func clear() { cancel?(); cancel = nil; vcsMark = nil; image = nil }
+  func refresh() { if let entry { show(entry, pixels: pixels) } }
+  func clear() { cancel?(); cancel = nil; entry = nil; vcsMark = nil; image = nil }
   deinit { cancel?() }
 }
 
