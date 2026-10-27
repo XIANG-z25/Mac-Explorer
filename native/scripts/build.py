@@ -41,6 +41,7 @@ shutil.copy2(root / "Vendor" / "libsmb2" / "README.mac-explorer.md", contents / 
 shutil.copy2(root / "ICON-LICENSE.txt", contents / "Resources" / "ICON-LICENSE.txt")
 shutil.copytree(root.parent / "electron" / "templates", contents / "Resources" / "templates", dirs_exist_ok=True)
 shutil.copy2(bin_dir / "MacExplorerNative", contents / "MacOS" / "MacExplorerNative")
+subprocess.run(["xcrun", "strip", "-x", str(contents / "MacOS" / "MacExplorerNative")], check=True)
 icon_source = root.parent / "electron" / "native" / "FileIcon.swift"
 icon_binary = contents / "Resources" / "file-icon"
 if not icon_binary.exists() or icon_binary.stat().st_mtime < icon_source.stat().st_mtime:
@@ -48,9 +49,10 @@ if not icon_binary.exists() or icon_binary.stat().st_mtime < icon_source.stat().
 subprocess.run(["codesign", "--force", "--sign", "-", str(icon_binary)], check=True)
 info = {
     "CFBundleExecutable": "MacExplorerNative",
-    "CFBundleIdentifier": "local.macexplorer.native-validation" if args.validation else "local.macexplorer.native-prototype",
-    "CFBundleName": "Mac Explorer",
-    "CFBundleDisplayName": "Mac Explorer",
+    "CFBundleIdentifier": "local.zx.macexplorer.daily.validation" if args.validation else "local.zx.macexplorer.daily",
+    "ExplorerDailyBuild": True,
+    "CFBundleName": "Mac Explorer Daily",
+    "CFBundleDisplayName": "Mac Explorer Daily",
     "CFBundlePackageType": "APPL",
     "CFBundleIconFile": "AppIcon.icns",
     "CFBundleShortVersionString": (root / "VERSION").read_text().strip(),

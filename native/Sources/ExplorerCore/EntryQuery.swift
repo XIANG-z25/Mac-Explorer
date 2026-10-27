@@ -19,6 +19,7 @@ public enum EntryQuery {
     let locale = NativeLanguage.formatLocale
     let textOptions: String.CompareOptions = [.caseInsensitive, .diacriticInsensitive]
     let nameOptions: String.CompareOptions = [.numeric, .caseInsensitive, .diacriticInsensitive]
+    let kinds: [String: String] = sort == .kind ? Dictionary(entries.map { ($0.id, $0.kind) }, uniquingKeysWith: { first, _ in first }) : [:]
     return entries.filter { entry in
       (showHidden || !entry.isHidden)
         && (query.isEmpty || entry.name.range(of: query, options: textOptions, locale: locale) != nil)
@@ -41,7 +42,7 @@ public enum EntryQuery {
       case .size:
         order = compare(left.size, right.size)
       case .kind:
-        order = left.kind.compare(right.kind, options: nameOptions, locale: locale)
+        order = (kinds[left.id] ?? left.kind).compare(kinds[right.id] ?? right.kind, options: nameOptions, locale: locale)
       }
       if order == .orderedSame {
         order = left.name.compare(right.name, options: nameOptions, locale: locale)

@@ -27,6 +27,39 @@ enum ExplorerDialogs {
     form.field.selectText(nil)
   }
 
+  static func batchRename(in window: NSWindow, sources: [URL], submit: @escaping (BatchRenameOptions) -> Void) {
+    let form = EDBatchRenameForm(sources: sources)
+    let dialog = EDPresentation(parent: window, title: NL("批量重命名"), size: NSSize(width: 560, height: 590), body: form)
+    dialog.surface.primary.title = NL("重命名 {0} 项", sources.count)
+    form.onChange = { [weak dialog, weak form] in dialog?.surface.primary.isEnabled = form?.isValid ?? false }
+    form.onChange?()
+    dialog.onSubmit = { [weak dialog, weak form] in
+      guard let dialog, let form, form.isValid else { return }
+      dialog.close(); submit(form.options)
+    }
+    dialog.present(focus: form.sourceName)
+    form.sourceName.selectText(nil)
+  }
+
+  static func batchRenameCollision(in window: NSWindow, conflicts: [BatchRenameConflict], allowReplace: Bool, keepBoth: @escaping () -> Void, replace: @escaping () -> Void) {
+    let alert = NSAlert()
+    alert.messageText = NL("发现同名项目")
+    let formatter = ByteCountFormatter(); formatter.countStyle = .file
+    func size(_ value: Int64?) -> String { value.map { formatter.string(fromByteCount: $0) } ?? NL("文件夹或未知大小") }
+    let shown = conflicts.prefix(4).map { conflict in
+      NL("来源：{0}（{1}）\n现有：{2}（{3}）", conflict.source.lastPathComponent, size(conflict.sourceSize), conflict.destination.lastPathComponent, size(conflict.destinationSize))
+    }
+    let more = conflicts.count > shown.count ? "\n" + NL("另有 {0} 个同名目标。", conflicts.count - shown.count) : ""
+    alert.informativeText = shown.joined(separator: "\n\n") + more + "\n\n" + NL("请选择创建带编号的新名称，或替换现有项目。替换无法撤销。")
+    alert.addButton(withTitle: NL("创建名称 (1)"))
+    if allowReplace { alert.addButton(withTitle: NL("替换现有项目")) }
+    alert.addButton(withTitle: NL("取消"))
+    alert.beginSheetModal(for: window) { response in
+      if response == .alertFirstButtonReturn { keepBoth() }
+      else if allowReplace, response == .alertSecondButtonReturn { replace() }
+    }
+  }
+
   static func confirm(in window: NSWindow, title: String, detail: String, confirmTitle: String, remember: ((Bool) -> Void)? = nil, action: @escaping () -> Void) {
     let body = EDScrollingBody()
     body.flow.padding = 0
@@ -113,7 +146,7 @@ private enum EDColors {
 
 private func edLabel(_ text: String, size: CGFloat = 12, weight: NSFont.Weight = .regular, wraps: Bool = false, selectable: Bool = false) -> NSTextField {
   let label = ExplorerTextField(labelWithString: text)
-  label.font = .systemFont(ofSize: size, weight: weight)
+  label.font = ExplorerTypography.font(ofSize: size == 12 ? 13 : size, weight: weight)
   label.textColor = ExplorerPalette.text
   label.isSelectable = selectable
   label.lineBreakMode = wraps ? .byCharWrapping : .byTruncatingTail
@@ -126,14 +159,13 @@ private func edLabel(_ text: String, size: CGFloat = 12, weight: NSFont.Weight =
 private func edTextHeight(_ text: String, width: CGFloat, size: CGFloat = 12) -> CGFloat {
   let paragraph = NSMutableParagraphStyle()
   paragraph.lineBreakMode = .byCharWrapping
-  let rect = (text as NSString).boundingRect(with: NSSize(width: max(1, width), height: 100_000), options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: [.font: NSFont.systemFont(ofSize: size), .paragraphStyle: paragraph])
+  let rect = (text as NSString).boundingRect(with: NSSize(width: max(1, width), height: 100_000), options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: [.font: ExplorerTypography.font(ofSize: size == 12 ? 13 : size), .paragraphStyle: paragraph])
   return max(18, ceil(rect.height) + 2)
 }
 
 private func edDrawText(_ text: String, in rect: NSRect, size: CGFloat = 12, weight: NSFont.Weight = .regular, color: NSColor = ExplorerPalette.text, alignment: NSTextAlignment = .left) {
   guard rect.width > 0 else { return }
-  NSGraphicsContext.current?.cgContext.setShouldSmoothFonts(false)
-  let font = NSFont.systemFont(ofSize: size, weight: weight)
+  let font = ExplorerTypography.font(ofSize: size == 12 ? 13 : size, weight: weight)
   let paragraph = NSMutableParagraphStyle()
   paragraph.lineBreakMode = .byTruncatingTail
   paragraph.alignment = alignment
@@ -464,7 +496,7 @@ final class EDButton: NSButton {
     self.title = title
     isBordered = false
     setButtonType(.momentaryPushIn)
-    font = .systemFont(ofSize: 12)
+    font = ExplorerTypography.font()
     focusRingType = .none
     target = self
     action = #selector(press)
@@ -478,7 +510,7 @@ final class EDButton: NSButton {
   override var acceptsFirstResponder: Bool { isEnabled }
   override var mouseDownCanMoveWindow: Bool { false }
   override var intrinsicContentSize: NSSize {
-    NSSize(width: max(style == .tab ? 80 : 87, ceil((title as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 12)]).width) + 36), height: 34)
+    NSSize(width: max(style == .tab ? 80 : 87, ceil((title as NSString).size(withAttributes: [.font: ExplorerTypography.font()]).width) + 36), height: 34)
   }
   @objc private func press() { if !readOnly { onPress?() } }
   override func updateTrackingAreas() {
@@ -542,7 +574,7 @@ final class EDButton: NSButton {
       let color = style == .primary ? EDColors.primaryText : ExplorerPalette.text
       var textRect = bounds.insetBy(dx: 8, dy: 0)
       if let iconName {
-        let textWidth = ceil((title as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 12)]).width)
+        let textWidth = ceil((title as NSString).size(withAttributes: [.font: ExplorerTypography.font()]).width)
         let left = max(8, (bounds.width - textWidth - 22) / 2)
         ExplorerIcons.image(iconName, size: 16, color: color).draw(in: NSRect(x: left, y: bounds.midY - 8, width: 16, height: 16), from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
         textRect = NSRect(x: left + 22, y: 0, width: max(0, bounds.width - left - 30), height: bounds.height)
@@ -555,13 +587,14 @@ final class EDButton: NSButton {
 
 private final class EDNameForm: EDView, NSTextFieldDelegate {
   let field = ExplorerTextField()
+  weak var extra: NSTextField?
   var onChange: ((String) -> Void)?
   private let label = edLabel(NL("名称"))
   private var editing = false
   init(value: String) {
     super.init(frame: .zero)
     field.stringValue = value
-    field.font = .systemFont(ofSize: 13)
+    field.font = ExplorerTypography.font()
     field.textColor = ExplorerPalette.text
     field.isBezeled = false
     field.isBordered = false
@@ -577,6 +610,7 @@ private final class EDNameForm: EDView, NSTextFieldDelegate {
     super.layout()
     label.frame = NSRect(x: 0, y: 0, width: bounds.width, height: 18)
     field.frame = NSRect(x: 10, y: 35, width: max(1, bounds.width - 20), height: 20)
+    extra?.frame = NSRect(x: 0, y: 75, width: bounds.width, height: 20)
   }
   override func draw(_ dirtyRect: NSRect) {
     let input = NSRect(x: 0, y: 27, width: bounds.width, height: 35)
@@ -591,6 +625,133 @@ private final class EDNameForm: EDView, NSTextFieldDelegate {
   func controlTextDidChange(_ obj: Notification) { onChange?(field.stringValue) }
   func controlTextDidBeginEditing(_ obj: Notification) { editing = true; needsDisplay = true }
   func controlTextDidEndEditing(_ obj: Notification) { editing = false; needsDisplay = true }
+}
+
+/// A compact, live-preview rule editor. The core receives only value types, so
+/// no UI state participates in the filesystem operation.
+private final class EDBatchRenameForm: EDView, NSTextFieldDelegate {
+  let sourceName = ExplorerTextField()
+  let prefix = ExplorerTextField()
+  private let suffix = ExplorerTextField()
+  private let find = ExplorerTextField()
+  private let replacement = ExplorerTextField()
+  private let casing = NSPopUpButton()
+  private let removeBracketed = NSButton(checkboxWithTitle: NL("删除括号内容"), target: nil, action: nil)
+  private let sequence = NSButton(checkboxWithTitle: NL("添加数字序列"), target: nil, action: nil)
+  private let sequenceStart = ExplorerTextField()
+  private let sequencePadding = ExplorerTextField()
+  private let changeExtension = NSButton(checkboxWithTitle: NL("更改文件扩展名"), target: nil, action: nil)
+  private let fileExtension = ExplorerTextField()
+  private let preview = edLabel("", size: 12, wraps: true)
+  private let sourceLabel = edLabel(NL("编辑源文件名"))
+  private let prefixLabel = edLabel(NL("前缀"))
+  private let suffixLabel = edLabel(NL("后缀"))
+  private let findLabel = edLabel(NL("查找"))
+  private let replacementLabel = edLabel(NL("替换为"))
+  private let casingLabel = edLabel(NL("大小写"))
+  private let startLabel = edLabel(NL("起始值"))
+  private let widthLabel = edLabel(NL("位数"))
+  private let sources: [URL]
+  private let originalSourceName: String
+  private var fields: [ExplorerTextField] { [sourceName, prefix, suffix, find, replacement, sequenceStart, sequencePadding, fileExtension] }
+  var onChange: (() -> Void)?
+
+  init(sources: [URL]) {
+    self.sources = sources
+    if let source = sources.first,
+       let values = try? source.resourceValues(forKeys: [.isDirectoryKey]),
+       values.isDirectory != true,
+       !source.pathExtension.isEmpty {
+      originalSourceName = source.deletingPathExtension().lastPathComponent
+    } else {
+      originalSourceName = sources.first?.lastPathComponent ?? ""
+    }
+    super.init(frame: .zero)
+    casing.addItems(withTitles: [NL("保留原样"), NL("小写"), NL("大写"), NL("首字母大写")])
+    casing.selectItem(at: 0)
+    sourceName.stringValue = originalSourceName
+    sequenceStart.stringValue = "1"
+    sequencePadding.stringValue = "2"
+    for field in fields {
+      field.font = ExplorerTypography.font()
+      field.delegate = self
+      field.isBezeled = true
+      field.setAccessibilityLabel(NL("重命名规则"))
+      addSubview(field)
+    }
+    for button in [removeBracketed, sequence, changeExtension] {
+      button.font = ExplorerTypography.font()
+      button.target = self
+      button.action = #selector(changed)
+      addSubview(button)
+    }
+    casing.font = ExplorerTypography.font()
+    casing.target = self
+    casing.action = #selector(changed)
+    [casing, preview, sourceLabel, prefixLabel, suffixLabel, findLabel, replacementLabel, casingLabel, startLabel, widthLabel].forEach(addSubview)
+    update()
+  }
+  required init?(coder: NSCoder) { fatalError("Use the programmatic initializer") }
+
+  var options: BatchRenameOptions {
+    let style: BatchRenameCase = [.preserve, .lowercase, .uppercase, .capitalized][max(0, min(3, casing.indexOfSelectedItem))]
+    let sequenceRule: BatchRenameSequence? = sequence.state == .on ? BatchRenameSequence(start: Int(sequenceStart.stringValue) ?? -1, padding: Int(sequencePadding.stringValue) ?? -1) : nil
+    return BatchRenameOptions(prefix: prefix.stringValue, suffix: suffix.stringValue, find: find.stringValue, replacement: replacement.stringValue, casing: style, removeTexts: removedTexts ?? [], removeBracketedContent: removeBracketed.state == .on, sequence: sequenceRule, extensionOverride: changeExtension.state == .on ? fileExtension.stringValue : nil)
+  }
+
+  private var removedTexts: [String]? {
+    FileActions.batchRenameRemovedText(original: originalSourceName, edited: sourceName.stringValue)
+  }
+
+  var isValid: Bool {
+    guard removedTexts != nil else { return false }
+    let hasRule = sourceName.stringValue != originalSourceName || !prefix.stringValue.isEmpty || !suffix.stringValue.isEmpty || !find.stringValue.isEmpty || casing.indexOfSelectedItem != 0 || removeBracketed.state == .on || sequence.state == .on || changeExtension.state == .on
+    guard hasRule else { return false }
+    if sequence.state == .on {
+      guard (Int(sequenceStart.stringValue) ?? -1) >= 0, (0...12).contains(Int(sequencePadding.stringValue) ?? -1) else { return false }
+    }
+    let ext = fileExtension.stringValue
+    return changeExtension.state != .on || (!ext.contains("/") && !ext.contains(":") && !ext.contains("\0"))
+  }
+
+  override func layout() {
+    super.layout()
+    let width = bounds.width
+    let labelWidth: CGFloat = 82
+    let fieldWidth = max(80, width - labelWidth)
+    func position(_ view: NSView, _ y: CGFloat, _ x: CGFloat = labelWidth, _ w: CGFloat = fieldWidth) { view.frame = NSRect(x: x, y: y, width: w, height: 28) }
+    func positionLabel(_ label: NSTextField, _ y: CGFloat) { label.frame = NSRect(x: 0, y: y + 4, width: labelWidth - 8, height: 20) }
+    positionLabel(sourceLabel, 0); position(sourceName, 0)
+    positionLabel(prefixLabel, 36); position(prefix, 36)
+    positionLabel(suffixLabel, 72); position(suffix, 72)
+    positionLabel(findLabel, 108); position(find, 108)
+    positionLabel(replacementLabel, 144); position(replacement, 144)
+    positionLabel(casingLabel, 180); position(casing, 180)
+    removeBracketed.frame = NSRect(x: labelWidth, y: 214, width: 170, height: 26)
+    sequence.frame = NSRect(x: labelWidth, y: 246, width: 130, height: 26)
+    startLabel.frame = NSRect(x: labelWidth + 140, y: 250, width: 48, height: 18)
+    position(sequenceStart, 244, labelWidth + 188, 48)
+    widthLabel.frame = NSRect(x: labelWidth + 244, y: 250, width: 36, height: 18)
+    position(sequencePadding, 244, labelWidth + 280, 48)
+    changeExtension.frame = NSRect(x: labelWidth, y: 282, width: 150, height: 26)
+    position(fileExtension, 280, labelWidth + 154, max(80, width - labelWidth - 154))
+    preview.frame = NSRect(x: 0, y: 322, width: width, height: max(48, bounds.height - 322))
+  }
+
+  func controlTextDidChange(_ obj: Notification) { update() }
+  @objc private func changed() { update() }
+  private func update() {
+    if sourceName.stringValue != originalSourceName, removedTexts == nil {
+      preview.stringValue = NL("源文件名只能删除文字。")
+    } else {
+      let names = FileActions.batchRenamePreview(Array(sources.prefix(2)), options: options)
+      preview.stringValue = names.isEmpty ? "" : NL("预览：{0}", names.joined(separator: "\n"))
+    }
+    sequenceStart.isEnabled = sequence.state == .on
+    sequencePadding.isEnabled = sequence.state == .on
+    fileExtension.isEnabled = changeExtension.state == .on
+    onChange?()
+  }
 }
 
 private final class EDFlow: EDView {
@@ -673,7 +834,7 @@ private final class EDPropertyIdentity: EDView {
   init(title: String, icon: NSImage?) {
     super.init(frame: .zero)
     image.image = icon; image.imageScaling = .scaleProportionallyUpOrDown
-    name.stringValue = title; name.isEditable = false; name.isSelectable = true; name.isBordered = false; name.drawsBackground = false; name.font = .systemFont(ofSize: 13); name.textColor = ExplorerPalette.text
+    name.stringValue = title; name.isEditable = false; name.isSelectable = true; name.isBordered = false; name.drawsBackground = false; name.font = ExplorerTypography.font(); name.textColor = ExplorerPalette.text
     addSubview(image); addSubview(name)
   }
   required init?(coder: NSCoder) { fatalError() }
@@ -740,7 +901,7 @@ private final class EDGroup: EDView {
     arrange?(content.bounds)
   }
   override func draw(_ dirtyRect: NSRect) {
-    let width = ceil((title as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 12, weight: .semibold)]).width)
+    let width = ceil((title as NSString).size(withAttributes: [.font: ExplorerTypography.font(weight: .semibold)]).width) + 2
     edDrawText(title, in: NSRect(x: 0, y: 0, width: width, height: 18), weight: .semibold)
     ExplorerPalette.border.setFill()
     NSRect(x: width + 12, y: 9, width: max(0, bounds.width - width - 12), height: 1).fill()
@@ -769,8 +930,8 @@ private final class EDSettingsBody: EDView {
   private var shortcutError: NSTextField?
   private var shortcutSave: EDButton?
   private var shortcutReset: EDButton?
-  private let allTools = ["cut", "copy", "paste", "rename", "share", "trash", "airdrop", "terminal", "undo", "refresh"]
-  private let toolLabels = ["cut": NL("剪切"), "copy": NL("复制"), "paste": NL("粘贴"), "rename": NL("重命名"), "share": NL("共享"), "trash": NL("移到回收站"), "airdrop": NL("隔空投送"), "terminal": NL("在终端中打开"), "undo": NL("撤销"), "refresh": NL("刷新")]
+  private let allTools = ["cut", "copy", "paste", "rename", "batchRename", "share", "trash", "airdrop", "terminal", "undo", "refresh"]
+  private let toolLabels = ["cut": NL("剪切"), "copy": NL("复制"), "paste": NL("粘贴"), "rename": NL("重命名"), "batchRename": NL("批量重命名"), "share": NL("共享"), "trash": NL("移到回收站"), "airdrop": NL("隔空投送"), "terminal": NL("在终端中打开"), "undo": NL("撤销"), "refresh": NL("刷新")]
 
   init(theme: String, toolbar: [String], shortcutRows: [(String, String)], onTheme: @escaping (String) -> Void, onToolbar: (([String]) -> Void)?, onShortcut: ((String, String) -> Void)?, shortcutDefaults: [String: String], folderDefaults: [String: String], onFolderDefaults: (([String: String]) -> Void)?, onResetFolders: (() -> Void)?) {
     self.theme = theme
@@ -840,6 +1001,15 @@ private final class EDSettingsBody: EDView {
   }
   private func general() {
     content.flow.gap = 20
+    if let browser {
+      let group = EDGroup(NL("使用模式"))
+      let mode = EDChoiceRow(title: NL("功能"), options: [(NL("日常精简"), "daily"), (NL("完整功能"), "full")], value: browser.dailyMode ? "daily" : "full") { [weak self, weak browser] value in
+        browser?.defaults.set(value == "daily", forKey: ExplorerDailyProfile.key)
+        self?.select(0)
+      }
+      group.content.addSubview(mode); group.arrange = { mode.frame = $0 }
+      content.flow.add(group) { _ in 58 }
+    }
     let group = EDGroup(NL("外观"))
     let options = [("light", NL("浅色")), ("dark", NL("深色")), ("system", NL("跟随系统"))]
     let buttons = options.map { mode, label -> EDButton in
@@ -860,7 +1030,7 @@ private final class EDSettingsBody: EDView {
     let arrangeAppearance: (CGFloat) -> CGFloat = { width in
       var x: CGFloat = 0, y: CGFloat = 0
       for button in buttons {
-        let itemWidth = ceil((button.title as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 13)]).width) + 46
+        let itemWidth = ceil((button.title as NSString).size(withAttributes: [.font: ExplorerTypography.font()]).width) + 46
         if x > 0 && x + itemWidth > width { x = 0; y += 34 }
         button.frame = NSRect(x: x, y: y, width: min(width, itemWidth), height: 28)
         x += itemWidth + 18
@@ -870,13 +1040,32 @@ private final class EDSettingsBody: EDView {
     group.arrange = { _ = arrangeAppearance($0.width) }
     content.flow.add(group) { 26 + arrangeAppearance($0) }
     if let browser {
+      let typography = EDGroup(NL("字体大小"))
+      let font = EDChoiceRow(title: NL("界面文字"), options: (12...16).map { (NL("{0} 磅", $0), String($0)) }, value: String(Int(ExplorerTypography.baseSize))) { [weak browser] value in
+        if let size = Int(value) { browser?.defaults.set(size, forKey: ExplorerTypography.preferenceKey) }
+      }
+      typography.content.addSubview(font); typography.arrange = { font.frame = $0 }
+      content.flow.add(typography) { _ in 58 }
+    }
+    if let browser {
       let startup = EDGroup(NL("启动位置"))
-      let destination = EDChoiceRow(title: NL("默认打开"), options: [(NL("此电脑"), "computer"), (NL("个人文件夹"), "home")], value: NativeStartLocation.load(browser.defaults).rawValue) { [weak browser] value in
+      let destinations = [(NL("此电脑"), "computer"), (NL("个人文件夹"), "home"), (NL("桌面"), "desktop"), (NL("下载"), "downloads"), (NL("文档"), "documents"), (NL("图片"), "pictures"), (NL("音乐"), "music"), (NL("视频"), "movies"), (NL("应用程序"), "applications")]
+      let destination = EDChoiceRow(title: NL("默认打开"), options: destinations, value: NativeStartLocation.load(browser.defaults).rawValue) { [weak browser] value in
         guard let location = NativeStartLocation(rawValue: value) else { return }
         browser?.defaults.set(location.rawValue, forKey: NativeStartLocation.preferenceKey)
       }
       startup.content.addSubview(destination); startup.arrange = { destination.frame = $0 }
       content.flow.add(startup) { _ in 58 }
+    }
+    if let browser {
+      let density = EDGroup(NL("布局间距"))
+      let compact = EDButton(title: NL("使用 Windows 紧凑间距"), style: .checkbox)
+      compact.checked = browser.defaults.bool(forKey: "compact")
+      compact.onPress = { [weak compact, weak browser] in
+        guard let compact else { return }; compact.checked.toggle(); browser?.defaults.set(compact.checked, forKey: "compact")
+      }
+      density.content.addSubview(compact); density.arrange = { compact.frame = NSRect(x: 0, y: 0, width: $0.width, height: 28) }
+      content.flow.add(density) { _ in 54 }
     }
     let language = EDGroup(NL("语言"))
     let row = EDChoiceRow(title: NL("界面语言"), options: [(NL("跟随系统"), "system"), ("简体中文", "zh-CN"), ("繁體中文", "zh-TW"), ("English", "en")], value: browser?.defaults.string(forKey: "language") ?? "system") { [weak self] in self?.browser?.changeLanguage($0) }
@@ -884,58 +1073,68 @@ private final class EDSettingsBody: EDView {
     language.arrange = { rect in row.frame = rect }
     content.flow.add(language) { _ in 58 }
     if let browser {
-      let terminal = EDGroup(NL("终端"))
-      let selected = browser.defaults.string(forKey: NativeTerminal.preferenceKey) ?? ""
-      let application = EDChoiceRow(title: NL("终端应用"), options: NativeTerminal.options(selected: selected), value: selected) { [weak browser] in browser?.defaults.set($0, forKey: NativeTerminal.preferenceKey) }
-      terminal.content.addSubview(application); terminal.arrange = { application.frame = $0 }
-      content.flow.add(terminal) { _ in 58 }
-      let search = EDGroup(NL("文件搜索"))
-      let mode = EDChoiceRow(title: NL("搜索模式"), options: [(NL("普通文本"), "text"), (NL("通配符"), "wildcard"), (NL("正则表达式"), "regex")], value: FileSearchMode(rawValue: browser.defaults.string(forKey: "searchMode") ?? "")?.rawValue ?? "text") { [weak browser] in browser?.defaults.set($0, forKey: "searchMode") }
-      search.content.addSubview(mode); search.arrange = { mode.frame = $0 }
-      content.flow.add(search) { _ in 58 }
-      let serverTransfer = EDGroup(NL("网络传输"))
-      let offload = EDButton(title: NL("启用同服务器跨共享传输优化"), style: .checkbox)
-      offload.checked = browser.defaults.object(forKey: "serverSideTransfer") as? Bool ?? true
-      offload.onPress = { [weak offload, weak browser] in
-        guard let offload else { return }; offload.checked.toggle(); browser?.defaults.set(offload.checked, forKey: "serverSideTransfer")
-      }
-      let forget = EDButton(title: NL("清除服务端传输登录信息"), style: .secondary)
-      forget.onPress = { [weak browser] in
-        guard let window = browser?.view.window else { return }
-        let alert = NSAlert(); alert.messageText = NL("清除服务端传输登录信息？")
-        alert.addButton(withTitle: NL("清除")); alert.addButton(withTitle: NL("取消"))
-        alert.beginSheetModal(for: window) { response in
-          guard response == .alertFirstButtonReturn else { return }
-          let code = NativeSMBAccounts.shared.forgetAll()
-          if code != 0 {
-            let failure = NSAlert(); failure.messageText = NL("无法清除登录信息"); failure.informativeText = NL("钥匙串错误码：{0}", String(code)); failure.beginSheetModal(for: window)
+      let remote = EDGroup(NL("远程服务器"))
+      let reconnect = EDButton(title: NL("启动时自动重连已连接过的 SMB 服务器"), style: .checkbox)
+      reconnect.checked = browser.defaults.bool(forKey: "autoReconnectSMB")
+      reconnect.onPress = { [weak reconnect, weak browser] in guard let reconnect else { return }; reconnect.checked.toggle(); browser?.defaults.set(reconnect.checked, forKey: "autoReconnectSMB") }
+      remote.content.addSubview(reconnect); remote.arrange = { reconnect.frame = NSRect(x: 0, y: 0, width: $0.width, height: 28) }
+      content.flow.add(remote) { _ in 54 }
+      if !browser.dailyMode {
+        let terminal = EDGroup(NL("终端"))
+        let selected = browser.defaults.string(forKey: NativeTerminal.preferenceKey) ?? ""
+        let application = EDChoiceRow(title: NL("终端应用"), options: NativeTerminal.options(selected: selected), value: selected) { [weak browser] in browser?.defaults.set($0, forKey: NativeTerminal.preferenceKey) }
+        terminal.content.addSubview(application); terminal.arrange = { application.frame = $0 }
+        content.flow.add(terminal) { _ in 58 }
+        let search = EDGroup(NL("文件搜索"))
+        let mode = EDChoiceRow(title: NL("搜索模式"), options: [(NL("普通文本"), "text"), (NL("通配符"), "wildcard"), (NL("正则表达式"), "regex")], value: FileSearchMode(rawValue: browser.defaults.string(forKey: "searchMode") ?? "")?.rawValue ?? "text") { [weak browser] in browser?.defaults.set($0, forKey: "searchMode") }
+        search.content.addSubview(mode); search.arrange = { mode.frame = $0 }
+        content.flow.add(search) { _ in 58 }
+        let serverTransfer = EDGroup(NL("网络传输"))
+        let offload = EDButton(title: NL("启用同服务器跨共享传输优化"), style: .checkbox)
+        offload.checked = browser.defaults.object(forKey: "serverSideTransfer") as? Bool ?? true
+        offload.onPress = { [weak offload, weak browser] in
+          guard let offload else { return }; offload.checked.toggle(); browser?.defaults.set(offload.checked, forKey: "serverSideTransfer")
+        }
+        let forget = EDButton(title: NL("清除服务端传输登录信息"), style: .secondary)
+        forget.onPress = { [weak browser] in
+          guard let window = browser?.view.window else { return }
+          let alert = NSAlert(); alert.messageText = NL("清除服务端传输登录信息？")
+          alert.addButton(withTitle: NL("清除")); alert.addButton(withTitle: NL("取消"))
+          alert.beginSheetModal(for: window) { response in
+            guard response == .alertFirstButtonReturn else { return }
+            let code = NativeSMBAccounts.shared.forgetAll()
+            if code != 0 {
+              let failure = NSAlert(); failure.messageText = NL("无法清除登录信息"); failure.informativeText = NL("钥匙串错误码：{0}", String(code)); failure.beginSheetModal(for: window)
+            }
           }
         }
+        serverTransfer.content.addSubview(offload); serverTransfer.content.addSubview(forget)
+        serverTransfer.arrange = { rect in
+          offload.frame = NSRect(x: 0, y: 0, width: rect.width, height: 28)
+          forget.frame = NSRect(x: 0, y: 34, width: 240, height: 34)
+        }
+        content.flow.add(serverTransfer) { _ in 94 }
       }
-      serverTransfer.content.addSubview(offload); serverTransfer.content.addSubview(forget)
-      serverTransfer.arrange = { rect in
-        offload.frame = NSRect(x: 0, y: 0, width: rect.width, height: 28)
-        forget.frame = NSRect(x: 0, y: 34, width: 240, height: 34)
-      }
-      content.flow.add(serverTransfer) { _ in 94 }
       let favorites = EDGroup(NL("快速访问")), extra = NativeSettingsView(browser: browser)
       favorites.content.addSubview(extra); favorites.arrange = { extra.frame = $0 }
       extra.onHeightChange = { [weak self] in self?.content.needsLayout = true }
       content.flow.add(favorites) { _ in extra.preferredHeight + 26 }
       if let integration = browser.systemIntegration {
-        let group = EDGroup(NL("系统文件查看器（实验）")), system = NativeSystemSettingsView(integration: integration)
+        let group = EDGroup(NL("系统文件查看器")), system = NativeSystemSettingsView(integration: integration)
         group.content.addSubview(system); group.arrange = { system.frame = $0 }
         system.onHeightChange = { [weak self] in self?.content.needsLayout = true }
         content.flow.add(group) { _ in system.preferredHeight + 26 }
       }
-      let vcs = EDGroup(NL("版本控制"))
-      let toggle = EDButton(title: NL("启用 Git / SVN 状态角标和右键菜单"), style: .checkbox)
-      toggle.checked = browser.defaults.object(forKey: "versionControl") as? Bool ?? true
-      toggle.onPress = { [weak toggle, weak browser] in if let toggle { toggle.checked.toggle(); browser?.setVersionControl(toggle.checked) } }
-      let help = NativeHelpButton(text: NL("仅在仓库内启用。关闭后停止状态检测与刷新；需要已安装 Git 或 SVN 命令行工具。"), accessibilityLabel: NL("版本控制说明"))
-      vcs.content.addSubview(toggle); vcs.content.addSubview(help)
-      vcs.arrange = { rect in toggle.frame = NSRect(x: 0, y: 0, width: rect.width - 30, height: 28); help.frame = NSRect(x: rect.width - 24, y: 0, width: 24, height: 28) }
-      content.flow.add(vcs) { _ in 54 }
+      if !browser.dailyMode {
+        let vcs = EDGroup(NL("版本控制"))
+        let toggle = EDButton(title: NL("启用 Git / SVN 状态角标和右键菜单"), style: .checkbox)
+        toggle.checked = browser.defaults.object(forKey: "versionControl") as? Bool ?? false
+        toggle.onPress = { [weak toggle, weak browser] in if let toggle { toggle.checked.toggle(); browser?.setVersionControl(toggle.checked) } }
+        let help = NativeHelpButton(text: NL("仅在仓库内启用。关闭后停止状态检测与刷新；需要已安装 Git 或 SVN 命令行工具。"), accessibilityLabel: NL("版本控制说明"))
+        vcs.content.addSubview(toggle); vcs.content.addSubview(help)
+        vcs.arrange = { rect in toggle.frame = NSRect(x: 0, y: 0, width: rect.width - 30, height: 28); help.frame = NSRect(x: rect.width - 24, y: 0, width: 24, height: 28) }
+        content.flow.add(vcs) { _ in 54 }
+      }
     }
     if onFolderDefaults != nil {
       let group = EDGroup(NL("文件夹视图"))
@@ -959,7 +1158,9 @@ private final class EDSettingsBody: EDView {
   }
   private func toolbarContent() {
     content.flow.gap = 0
-    let order = toolbar + (onToolbar == nil ? [] : allTools.filter { !toolbar.contains($0) })
+    let available = browser?.dailyMode == true ? ExplorerDailyProfile.tools : allTools
+    let visibleToolbar = toolbar.filter { available.contains($0) }
+    let order = visibleToolbar + (onToolbar == nil ? [] : available.filter { !visibleToolbar.contains($0) })
     for id in order {
       let row = EDToolbarRow(title: toolLabels[id] ?? id, icon: id == "cut" ? "scissors" : id, checked: toolbar.contains(id), editable: onToolbar != nil)
       row.onToggle = { [weak self] in
@@ -984,7 +1185,7 @@ private final class EDSettingsBody: EDView {
       let reset = EDButton(title: NL("恢复默认工具栏"), style: .secondary)
       reset.onPress = { [weak self] in
         guard let self else { return }
-        self.toolbar = ["cut", "copy", "paste", "rename", "share", "trash"]
+        self.toolbar = ExplorerDailyProfile.tools
         onToolbar(self.toolbar)
         self.select(1)
       }
@@ -1099,14 +1300,16 @@ private final class EDSettingsBody: EDView {
     content.flow.add(versionLabel) { _ in 28 }
     let separator = SurfaceView(); separator.color = ExplorerPalette.border
     content.flow.add(separator) { _ in 1 }
-    let updateDefaults = browser?.defaults ?? .standard
-    let frequency = EDChoiceRow(title: NL("自动检查更新"), options: [
-      (NL("每次打开"), "launch"), (NL("每天"), "daily"), (NL("每周"), "weekly"), (NL("从不"), "never")
-    ], value: NativeUpdateFrequency.saved(in: updateDefaults).rawValue) { value in
-      updateDefaults.set(value, forKey: NativeUpdateFrequency.preferenceKey)
+    if !ExplorerDailyProfile.isCustomBuild {
+      let updateDefaults = browser?.defaults ?? .standard
+      let frequency = EDChoiceRow(title: NL("自动检查更新"), options: [
+        (NL("每次打开"), "launch"), (NL("每天"), "daily"), (NL("每周"), "weekly"), (NL("从不"), "never")
+      ], value: NativeUpdateFrequency.saved(in: updateDefaults).rawValue) { value in
+        updateDefaults.set(value, forKey: NativeUpdateFrequency.preferenceKey)
+      }
+      content.flow.add(frequency) { _ in 34 }
+      let updates = NativeUpdateView(); content.flow.add(updates) { _ in updates.preferredHeight }
     }
-    content.flow.add(frequency) { _ in 34 }
-    let updates = NativeUpdateView(); content.flow.add(updates) { _ in updates.preferredHeight }
     let linksRow = EDView()
     let links = [("项目主页", ""), ("GitHub 发布页", "/releases"), ("问题反馈", "/issues"), ("开源许可", "/blob/main/LICENSE")].map { title, path in
       let button = EDButton(title: NL(title), style: .secondary)

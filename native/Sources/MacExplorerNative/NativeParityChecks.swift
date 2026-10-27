@@ -42,7 +42,7 @@ enum NativeParityChecks {
     source.selectedPaths = [file.id]
     menu = source.contextItems()
     try expect(Array(menu.prefix(3).map(\.title)) == ["打开", "打开方式", "使用文本编辑"], "File context preserves Open and Open With ordering")
-    try expect(menu.first { $0.title == "重命名" }?.shortcut == ExplorerShortcuts.display("Enter"), "Context shortcut hints use the effective binding rather than hardcoded F2")
+    try expect(menu.first { $0.title == "重命名" }?.shortcut == ExplorerShortcuts.display("F2"), "Context shortcut hints use the effective binding")
     menu.first { $0.title == "复制文件地址" }?.action?()
     try expect(source.filePasteboard.string(forType: .string) == file.url.path, "Copy file address writes the selected fixture path")
     func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
@@ -125,8 +125,12 @@ enum NativeParityChecks {
     try button("关于").performClick(nil)
     try await Task.sleep(nanoseconds: 100_000_000)
     let text = views().compactMap { ($0 as? NSTextField)?.stringValue }.joined(separator: "\n")
-    try expect(text.contains("尚未检查更新") && text.contains("GPL-3.0-only") && !text.contains("当前版本："), "About restores update status and copyright without duplicate version")
-    try expect(text.contains("自动检查更新") && views().compactMap { $0 as? NSButton }.contains { $0.title == "每天" }, "About shows automatic update frequency with daily default")
+    try expect(text.contains("GPL-3.0-only") && !text.contains("当前版本："), "About retains copyright without duplicate version")
+    if ExplorerDailyProfile.isCustomBuild {
+      try expect(!text.contains("自动检查更新") && !views().compactMap { $0 as? NSButton }.contains { $0.title == "检查更新" }, "Custom daily build cannot install upstream updates")
+    } else {
+      try expect(text.contains("尚未检查更新") && text.contains("自动检查更新") && views().compactMap { $0 as? NSButton }.contains { $0.title == "每天" }, "About shows automatic update frequency with daily default")
+    }
     for title in ["项目主页", "GitHub 发布页", "问题反馈", "开源许可"] { _ = try button(title) }
     checks.append("All four About project links are present")
     let updates = NativeUpdateView()

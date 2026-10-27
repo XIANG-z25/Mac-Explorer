@@ -60,15 +60,14 @@ final class ExplorerRootView: SurfaceView {
 class ExplorerTextField: NSTextField {
   override func draw(_ dirtyRect: NSRect) {
     NSGraphicsContext.saveGraphicsState()
-    NSGraphicsContext.current?.cgContext.setShouldSmoothFonts(false)
     super.draw(dirtyRect)
     NSGraphicsContext.restoreGraphicsState()
   }
 }
 
-func label(_ text: String, size: CGFloat = 12, color: NSColor = ExplorerPalette.text) -> NSTextField {
+func label(_ text: String, size: CGFloat = 13, color: NSColor = ExplorerPalette.text) -> NSTextField {
   let field = ExplorerTextField(labelWithString: text)
-  field.font = NSFont(name: "PingFangSC-Regular", size: size) ?? .systemFont(ofSize: size, weight: .regular); field.textColor = color; field.lineBreakMode = .byTruncatingTail
+  field.font = ExplorerTypography.font(ofSize: size == 12 ? 13 : size); field.textColor = color; field.lineBreakMode = .byTruncatingTail
   return field
 }
 func pin(_ child: NSView, to parent: NSView, inset: CGFloat = 0) {
@@ -84,10 +83,11 @@ final class IconLoader {
   private var pending: [String: [(UUID, (NSImage) -> Void)]] = [:]
   private var sources: [String: (String, Int)] = [:]
   private var queue: [String] = []
+  private var queueHead = 0
   private var scheduled = false
   private var inFlight = 0
   private(set) var loads = 0
-  var isIdle: Bool { queue.isEmpty && !scheduled && inFlight == 0 }
+  var isIdle: Bool { queueHead == queue.count && !scheduled && inFlight == 0 }
   init() { cache.countLimit = 512 }
   func clear() { cache.removeAllObjects() }
   func request(_ entry: FileEntry, pixels: Int, completion: @escaping (NSImage) -> Void) -> () -> Void {
@@ -99,11 +99,12 @@ final class IconLoader {
     return { [weak self] in self?.pending[key]?.removeAll { $0.0 == id } }
   }
   private func schedule() {
-    guard !scheduled, !queue.isEmpty, inFlight < 4 else { return }; scheduled = true
+    guard !scheduled, queueHead < queue.count, inFlight < 4 else { return }; scheduled = true
     DispatchQueue.main.async { [weak self] in
       guard let self else { return }; self.scheduled = false
-      while self.inFlight < 4 && !self.queue.isEmpty {
-        let key = self.queue.removeFirst()
+      while self.inFlight < 4 && self.queueHead < self.queue.count {
+        let key = self.queue[self.queueHead]
+        self.queueHead += 1
         guard let source = self.sources.removeValue(forKey: key), !(self.pending[key] ?? []).isEmpty else { self.pending.removeValue(forKey: key); continue }
         self.inFlight += 1; self.loads += 1
         self.service.request(path: source.0, pixels: source.1) { [weak self] result in
@@ -114,6 +115,10 @@ final class IconLoader {
           self.inFlight -= 1; callbacks.forEach { $0.1(image) }; self.schedule()
         }
       }
+      if self.queueHead == self.queue.count {
+        self.queue.removeAll(keepingCapacity: true)
+        self.queueHead = 0
+      }
     }
   }
 }
@@ -122,7 +127,7 @@ final class FileIconView: NSImageView {
   private var cancel: (() -> Void)?
   private var vcsMark: String?
   func show(_ entry: FileEntry, pixels: Int = 64) {
-    cancel?(); contentTintColor = nil; vcsMark = entry.vcsMark; needsDisplay = true
+    cancel?(); contentTintColor = nil; vcsMark = entry.vcsMark; toolTip = entry.name; needsDisplay = true
     if entry.isDirectory && !entry.isPackage { image = ExplorerIcons.folder(size: 128, url: entry.url); cancel = nil; return }
     image = ExplorerIcons.image("document", size: 64, color: ExplorerPalette.secondary)
     cancel = IconLoader.shared.request(entry, pixels: pixels) { [weak self] image in self?.image = image }
@@ -137,7 +142,7 @@ final class FileIconView: NSImageView {
     let dimensions = text.size(withAttributes: [.font: font])
     text.draw(at: NSPoint(x: frame.midX - dimensions.width / 2, y: frame.midY - dimensions.height / 2), withAttributes: [.font: font, .foregroundColor: NSColor.white])
   }
-  func clear() { cancel?(); cancel = nil; vcsMark = nil; image = nil }
+  func clear() { cancel?(); cancel = nil; vcsMark = nil; image = nil; toolTip = nil }
   deinit { cancel?() }
 }
 
@@ -173,13 +178,13 @@ final class NameCell: NSTableCellView {
     checkbox.frame = NSRect(x: 7, y: (bounds.height - 14) / 2, width: 14, height: 14)
     let left: CGFloat = checkboxes ? 30 : 12
     icon.frame = NSRect(x: left, y: (bounds.height - 22) / 2, width: 22, height: 22)
-    let height: CGFloat = nameLabel.isEditable ? 24 : 17
+    let height: CGFloat = nameLabel.isEditable ? 24 : max(17, ceil(nameLabel.font?.ascender ?? 13) - floor(nameLabel.font?.descender ?? -3) + 2)
     nameLabel.frame = NSRect(x: left + 31 - (nameLabel.isEditable ? 2 : 0), y: (bounds.height - height) / 2, width: max(0, min(nameLabel.isEditable ? 240 : bounds.width, bounds.width - left - 43)), height: height)
   }
   func configure(_ entry: FileEntry, name: String? = nil) {
     nameLabel.identifier = NSUserInterfaceItemIdentifier(entry.id)
     nameLabel.stringValue = name ?? entry.name; nameLabel.textColor = ExplorerPalette.text
-    alphaValue = entry.isHidden ? 0.6 : 1; toolTip = entry.url.path; icon.show(entry)
+    alphaValue = entry.isHidden ? 0.6 : 1; toolTip = entry.name; icon.show(entry)
   }
   override func prepareForReuse() { super.prepareForReuse(); icon.clear(); checkbox.changed = nil; nameLabel.delegate = nil; nameLabel.abortEditing(); nameLabel.isEditable = false; nameLabel.isSelectable = false; nameLabel.isBordered = false; nameLabel.drawsBackground = false }
 }
@@ -189,16 +194,15 @@ final class MetadataCell: NSTableCellView {
   override var isFlipped: Bool { true }
   override init(frame: NSRect) { super.init(frame: frame); addSubview(value); textField = value }
   required init?(coder: NSCoder) { fatalError() }
-  override func layout() { super.layout(); value.frame = NSRect(x: 12, y: (bounds.height - 17) / 2, width: max(0, bounds.width - 24), height: 17) }
+  override func layout() { super.layout(); let height = max(17, ceil(value.font?.ascender ?? 13) - floor(value.font?.descender ?? -3) + 2); value.frame = NSRect(x: 12, y: (bounds.height - height) / 2, width: max(0, bounds.width - 24), height: height) }
 }
 final class ExplorerHeaderCell: NSTableHeaderCell {
   var ascending: Bool?
   override func draw(withFrame fullFrame: NSRect, in controlView: NSView) {
     ExplorerPalette.surface.setFill(); fullFrame.fill()
     let cellFrame = NSRect(x: fullFrame.minX, y: fullFrame.minY, width: fullFrame.width, height: fullFrame.height - 4)
-    NSGraphicsContext.current?.cgContext.setShouldSmoothFonts(false)
     let text = stringValue as NSString
-    let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 12), .foregroundColor: ExplorerPalette.secondary]
+    let attrs: [NSAttributedString.Key: Any] = [.font: ExplorerTypography.font(), .foregroundColor: ExplorerPalette.secondary]
     let isSize = stringValue == NL("大小")
     let x = isSize ? cellFrame.maxX - text.size(withAttributes: attrs).width - 12 : cellFrame.minX + 12
     text.draw(at: NSPoint(x: x, y: cellFrame.midY - 8), withAttributes: attrs)
@@ -230,6 +234,11 @@ final class FileRowView: NSTableRowView {
   override var interiorBackgroundStyle: NSView.BackgroundStyle { .normal }
 }
 final class FileTableView: NSTableView {
+  var isFileRow: (Int) -> Bool = { _ in true }
+  var onGroupClick: ((Int) -> Void)?
+  override func selectRowIndexes(_ indexes: IndexSet, byExtendingSelection extend: Bool) {
+    super.selectRowIndexes(IndexSet(indexes.filter(isFileRow)), byExtendingSelection: extend)
+  }
   var openSelection: (() -> Void)?; var previewSelection: (() -> Void)?; var showContext: ((NSEvent) -> Void)?; var renameSelection: (() -> Void)?; var trashSelection: (() -> Void)?
   private var marquee: NativeMarqueeSelection?
   private var selectionCursor: Int?
@@ -240,11 +249,12 @@ final class FileTableView: NSTableView {
   override func mouseDown(with event: NSEvent) {
     guard NativeSelection.canHandle(self) else { super.mouseDown(with: event); return }
     let point = convert(event.locationInWindow, from: nil), clicked = row(at: point)
+    if clicked >= 0 && !isFileRow(clicked) { onGroupClick?(clicked); return }
     if clicked < 0, visibleRect.contains(point) {
       window?.makeFirstResponder(self)
       let previousAnchor = selectionAnchor
       if event.modifierFlags.intersection([.command, .control, .shift]).isEmpty { selectionAnchor = nil }
-      let frames = (0..<numberOfRows).map { ($0, rect(ofRow: $0)) }
+      let frames = (0..<numberOfRows).filter(isFileRow).map { ($0, rect(ofRow: $0)) }
       marquee = NativeMarqueeSelection(host: self, event: event, original: Set(selectedRowIndexes), targets: frames, apply: { [weak self] selection in guard let self, self.selectedRowIndexes != IndexSet(selection) else { return }; self.selectRowIndexes(IndexSet(selection), byExtendingSelection: false) }, finished: { [weak self] in if self?.marquee?.wasCancelled == true { self?.selectionAnchor = previousAnchor }; self?.marquee = nil })
       marquee?.begin(); return
     }
@@ -266,10 +276,10 @@ final class FileTableView: NSTableView {
     if event.keyCode == 53 { if marquee != nil { marquee?.end(cancelled: true) } else { deselectAll(nil); selectionCursor = nil; selectionAnchor = nil }; return }
     if [115, 119, 125, 126].contains(event.keyCode), event.modifierFlags.intersection([.command, .control, .option]).isEmpty, numberOfRows > 0 {
       let previous = selectionCursor ?? selectedRowIndexes.last ?? -1
-      let next = event.keyCode == 115 ? 0 : event.keyCode == 119 ? numberOfRows - 1 : max(0, min(numberOfRows - 1, previous + (event.keyCode == 125 ? 1 : -1)))
+      guard let next = nextFileRow(key: event.keyCode, previous: previous, count: numberOfRows, accepts: isFileRow) else { return }
       selectRowIndexes(IndexSet(integer: next), byExtendingSelection: event.modifierFlags.contains(.shift)); selectionCursor = next; selectionAnchor = next; scrollRowToVisible(next); return
     }
-    if event.keyCode == 36 || event.keyCode == 76 { renameSelection?(); return }
+    if event.keyCode == 36 || event.keyCode == 76 { openSelection?(); return }
     if event.keyCode == 49 { previewSelection?(); return }
     if event.keyCode == 120 { renameSelection?(); return }
     if event.keyCode == 51 && event.modifierFlags.contains(.command) { trashSelection?(); return }
@@ -277,6 +287,8 @@ final class FileTableView: NSTableView {
   }
 }
 final class FileCollectionView: NSCollectionView {
+  var isFileRow: (Int) -> Bool = { _ in true }
+  var onGroupClick: ((Int) -> Void)?
   var openSelection: (() -> Void)?; var previewSelection: (() -> Void)?; var showContext: ((NSEvent) -> Void)?; var renameSelection: (() -> Void)?; var trashSelection: (() -> Void)?
   private var marquee: NativeMarqueeSelection?
   private var selectionCursor: Int?
@@ -286,16 +298,17 @@ final class FileCollectionView: NSCollectionView {
   override func reloadData() { cancelMarqueeSelection(); selectionCursor = nil; selectionAnchor = nil; super.reloadData() }
   override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); if window == nil { cancelMarqueeSelection() } }
   private func applySelection(_ indexes: Set<Int>) {
-    let previous = selectionIndexPaths, next = Set(indexes.map { IndexPath(item: $0, section: 0) })
+    let previous = selectionIndexPaths, next = Set(indexes.filter(isFileRow).map { IndexPath(item: $0, section: 0) })
     guard previous != next else { return }; selectionIndexPaths = next
     delegate?.collectionView?(self, didDeselectItemsAt: previous.subtracting(next)); delegate?.collectionView?(self, didSelectItemsAt: next.subtracting(previous))
   }
   private func refreshExpandedNames() { for item in visibleItems() { item.view.needsLayout = true } }
   override func menu(for event: NSEvent) -> NSMenu? {
-    if indexPathForItem(at: convert(event.locationInWindow, from: nil)) == nil {
+    let hit = indexPathForItem(at: convert(event.locationInWindow, from: nil))
+    if hit == nil || hit.map({ !isFileRow($0.item) }) == true {
       let previous = selectionIndexPaths; selectionIndexPaths = []; delegate?.collectionView?(self, didDeselectItemsAt: previous)
     }
-    if let clicked = indexPathForItem(at: convert(event.locationInWindow, from: nil)), !selectionIndexPaths.contains(clicked) {
+    if let clicked = hit, isFileRow(clicked.item), !selectionIndexPaths.contains(clicked) {
       let previous = selectionIndexPaths; selectionIndexPaths = [clicked]
       delegate?.collectionView?(self, didDeselectItemsAt: previous); delegate?.collectionView?(self, didSelectItemsAt: [clicked])
     }
@@ -306,11 +319,11 @@ final class FileCollectionView: NSCollectionView {
     if event.keyCode == 53 { if marquee != nil { marquee?.end(cancelled: true) } else { applySelection([]); selectionCursor = nil; selectionAnchor = nil }; return }
     if [115, 119, 125, 126].contains(event.keyCode), event.modifierFlags.intersection([.command, .control, .option]).isEmpty, numberOfSections > 0, numberOfItems(inSection: 0) > 0 {
       let count = numberOfItems(inSection: 0), previous = selectionCursor ?? selectionIndexPaths.map(\.item).max() ?? -1
-      let next = event.keyCode == 115 ? 0 : event.keyCode == 119 ? count - 1 : max(0, min(count - 1, previous + (event.keyCode == 125 ? 1 : -1)))
+      guard let next = nextFileRow(key: event.keyCode, previous: previous, count: count, accepts: isFileRow) else { return }
       let paths = event.modifierFlags.contains(.shift) ? Set(selectionIndexPaths.map(\.item)).union([next]) : [next]
       applySelection(paths); selectionCursor = next; selectionAnchor = next; scrollToItems(at: [IndexPath(item: next, section: 0)], scrollPosition: .nearestHorizontalEdge.union(.nearestVerticalEdge)); return
     }
-    if event.keyCode == 36 || event.keyCode == 76 { renameSelection?(); return }
+    if event.keyCode == 36 || event.keyCode == 76 { openSelection?(); return }
     if event.keyCode == 49 { previewSelection?(); return }
     if event.keyCode == 120 { renameSelection?(); return }
     if event.keyCode == 51 && event.modifierFlags.contains(.command) { trashSelection?(); return }
@@ -319,12 +332,13 @@ final class FileCollectionView: NSCollectionView {
   override func mouseDown(with event: NSEvent) {
     guard NativeSelection.canHandle(self) else { super.mouseDown(with: event); return }
     let point = convert(event.locationInWindow, from: nil), clicked = indexPathForItem(at: point)
+    if let clicked, !isFileRow(clicked.item) { onGroupClick?(clicked.item); return }
     if clicked == nil, visibleRect.contains(point) {
       window?.makeFirstResponder(self); isMarqueeSelecting = true; refreshExpandedNames()
       let previousAnchor = selectionAnchor
       if event.modifierFlags.intersection([.command, .control, .shift]).isEmpty { selectionAnchor = nil }
       let count = numberOfSections > 0 ? numberOfItems(inSection: 0) : 0
-      let frames = (0..<count).compactMap { index -> (Int, NSRect)? in guard let rect = collectionViewLayout?.layoutAttributesForItem(at: IndexPath(item: index, section: 0))?.frame else { return nil }; return (index, rect) }
+      let frames = (0..<count).compactMap { index -> (Int, NSRect)? in guard isFileRow(index), let rect = collectionViewLayout?.layoutAttributesForItem(at: IndexPath(item: index, section: 0))?.frame else { return nil }; return (index, rect) }
       marquee = NativeMarqueeSelection(host: self, event: event, original: Set(selectionIndexPaths.map(\.item)), targets: frames, apply: { [weak self] in self?.applySelection($0) }, finished: { [weak self] in if self?.marquee?.wasCancelled == true { self?.selectionAnchor = previousAnchor }; self?.marquee = nil; self?.isMarqueeSelecting = false; self?.refreshExpandedNames() })
       marquee?.begin(); return
     }
@@ -343,6 +357,8 @@ final class ExplorerCollectionLayout: NSCollectionViewLayout {
   var mode: ExplorerLayoutMode = .icons
   var iconSize: CGFloat = 64
   var compact = false
+  var groupHeaderRows = Set<Int>()
+  private var groupedFrames: [NSRect] = []
   private var count = 0
   private var columns = 1
   private var rows = 1
@@ -352,32 +368,54 @@ final class ExplorerCollectionLayout: NSCollectionViewLayout {
   private var contentSize = NSSize.zero
   override func prepare() {
     guard let collectionView else { return }
-    count = collectionView.numberOfItems(inSection: 0)
+    count = collectionView.numberOfSections == 0 ? 0 : collectionView.numberOfItems(inSection: 0)
     let viewport = collectionView.enclosingScrollView?.contentSize ?? collectionView.bounds.size
     switch mode {
     case .list:
-      inset = NSSize(width: 14, height: 10); gap = .zero; cell = NSSize(width: 240, height: compact ? 28 : 36)
-      rows = max(1, Int((viewport.height - 20) / cell.height)); columns = max(1, Int(ceil(Double(count) / Double(rows))))
-      contentSize = NSSize(width: max(viewport.width, CGFloat(columns) * cell.width + 28), height: viewport.height)
+      inset = NSSize(width: 10, height: 6); gap = .zero; cell = NSSize(width: 220, height: compact ? 28 : 32)
+      rows = max(1, Int((viewport.height - 12) / cell.height)); columns = max(1, Int(ceil(Double(count) / Double(rows))))
+      contentSize = NSSize(width: max(viewport.width, CGFloat(columns) * cell.width + 20), height: viewport.height)
     case .content:
-      inset = NSSize(width: 14, height: 8); gap = .zero; columns = 1; cell = NSSize(width: max(100, viewport.width - 28), height: compact ? 70 : 86)
-      contentSize = NSSize(width: viewport.width, height: max(viewport.height, CGFloat(count) * cell.height + 28))
+      inset = NSSize(width: 10, height: 6); gap = .zero; columns = 1; cell = NSSize(width: max(100, viewport.width - 20), height: compact ? 66 : 78)
+      contentSize = NSSize(width: viewport.width, height: max(viewport.height, CGFloat(count) * cell.height + 20))
     default:
       let horizontal = mode == .tiles || iconSize == 32
-      inset = NSSize(width: horizontal ? 14 : 22, height: horizontal ? 14 : compact ? 12 : 22)
-      gap = NSSize(width: horizontal ? 8 : 5, height: horizontal ? 4 : compact ? 2 : 8)
-      let minimum: CGFloat = horizontal ? 240 : iconSize + 44
+      inset = NSSize(width: horizontal ? 10 : 14, height: horizontal ? 8 : compact ? 8 : 12)
+      gap = NSSize(width: horizontal ? 4 : 3, height: horizontal ? 2 : compact ? 1 : 4)
+      let minimum: CGFloat = horizontal ? 220 : iconSize + 32
       columns = max(1, Int((viewport.width - inset.width * 2 + gap.width) / (minimum + gap.width)))
       let width = max(40, (viewport.width - inset.width * 2 - CGFloat(columns - 1) * gap.width) / CGFloat(columns))
-      let height: CGFloat = mode == .tiles ? (compact ? 60 : 74) : iconSize == 32 ? (compact ? 36 : 42) : iconSize + (compact ? 48 : 58)
+      let height: CGFloat = mode == .tiles ? (compact ? 56 : 66) : iconSize == 32 ? (compact ? 34 : 38) : iconSize + (compact ? 44 : 50)
       cell = NSSize(width: width, height: height); rows = max(1, Int(ceil(Double(count) / Double(columns))))
       contentSize = NSSize(width: viewport.width, height: max(viewport.height, inset.height + CGFloat(rows) * (height + gap.height) + 30))
     }
+    groupedFrames.removeAll(keepingCapacity: true)
+    if !groupHeaderRows.isEmpty {
+      if mode == .list { columns = max(1, Int((viewport.width - 20) / 220)); cell.width = max(40, (viewport.width - 20) / CGFloat(columns)) }
+      var y = inset.height, column = 0
+      groupedFrames.reserveCapacity(count)
+      for index in 0..<count {
+        if groupHeaderRows.contains(index) {
+          if column > 0 { y += cell.height + gap.height; column = 0 }
+          groupedFrames.append(NSRect(x: 8, y: y, width: max(0, viewport.width - 16), height: 38)); y += 42
+        } else {
+          groupedFrames.append(NSRect(x: inset.width + CGFloat(column) * (cell.width + gap.width), y: y, width: cell.width, height: cell.height))
+          column += 1
+          if column == columns { column = 0; y += cell.height + gap.height }
+        }
+      }
+      if column > 0 { y += cell.height + gap.height }
+      contentSize = NSSize(width: viewport.width, height: max(viewport.height, y + 20))
+    }
   }
   override var collectionViewContentSize: NSSize { contentSize }
-  override func shouldInvalidateLayout(forBoundsChange newBounds: NSRect) -> Bool { true }
+  override func shouldInvalidateLayout(forBoundsChange newBounds: NSRect) -> Bool { newBounds.size != collectionView?.bounds.size }
   override func layoutAttributesForItem(at indexPath: IndexPath) -> NSCollectionViewLayoutAttributes? {
-    guard indexPath.item < count else { return nil }
+    guard indexPath.item >= 0, indexPath.item < count else { return nil }
+    if !groupHeaderRows.isEmpty {
+      guard groupedFrames.indices.contains(indexPath.item) else { return nil }
+      let attributes = NSCollectionViewLayoutAttributes(forItemWith: indexPath); attributes.frame = groupedFrames[indexPath.item]; return attributes
+    }
     let column = mode == .list ? indexPath.item / rows : indexPath.item % columns
     let row = mode == .list ? indexPath.item % rows : indexPath.item / columns
     let value = NSCollectionViewLayoutAttributes(forItemWith: indexPath)
@@ -387,6 +425,17 @@ final class ExplorerCollectionLayout: NSCollectionViewLayout {
   override func layoutAttributesForElements(in rect: NSRect) -> [NSCollectionViewLayoutAttributes] {
     guard count > 0 else { return [] }
     var output: [NSCollectionViewLayoutAttributes] = []
+    if !groupHeaderRows.isEmpty {
+      // Frames have monotonically increasing Y extents. Binary search keeps scrolling
+      // proportional to visible items, rather than scanning a large directory.
+      var low = 0, high = groupedFrames.count
+      while low < high { let mid = (low + high) / 2; if groupedFrames[mid].maxY < rect.minY { low = mid + 1 } else { high = mid } }
+      var index = low
+      while index < groupedFrames.count && groupedFrames[index].minY <= rect.maxY {
+        if groupedFrames[index].intersects(rect), let a = layoutAttributesForItem(at: IndexPath(item: index, section: 0)) { output.append(a) }; index += 1
+      }
+      return output
+    }
     if mode == .list {
       let first = max(0, Int((rect.minX - inset.width) / cell.width)); let last = min(columns - 1, Int(rect.maxX / cell.width) + 1)
       if first <= last { for index in (first * rows)..<min(count, (last + 1) * rows) { if let a = layoutAttributesForItem(at: IndexPath(item: index, section: 0)), a.frame.intersects(rect) { output.append(a) } } }
@@ -453,7 +502,7 @@ final class IconItem: NSCollectionViewItem {
       icon.frame = NSRect(x: leading, y: (height - size) / 2, width: size, height: size)
       let textX = leading + size + 9, textWidth = max(20, (mode == .content ? width * 0.55 : width) - textX - 12)
       let twoLines = mode == .tiles || mode == .content
-      nameLabel.frame = NSRect(x: textX, y: height / 2 - (twoLines ? 18 : 8), width: textWidth, height: 17)
+      nameLabel.frame = NSRect(x: textX, y: height / 2 - (twoLines ? 18 : 8), width: textWidth, height: max(17, ceil(nameLabel.font?.ascender ?? 13) - floor(nameLabel.font?.descender ?? -3) + 2))
       kindLabel.frame = NSRect(x: textX, y: height / 2 + 3, width: textWidth, height: 16)
       dateLabel.frame = NSRect(x: width * 0.57, y: height / 2 - 19, width: width * 0.43 - 12, height: 17)
       pathLabel.frame = NSRect(x: width * 0.57, y: height / 2 + 5, width: width * 0.43 - 12, height: 17)
@@ -468,7 +517,7 @@ final class IconItem: NSCollectionViewItem {
     nameLabel.stringValue = name ?? entry.name; kindLabel.stringValue = entry.kind + (entry.isDirectory ? "" : " · \(ExplorerFormat.size(entry.size))")
     dateLabel.stringValue = NL("修改日期：") + (entry.modified?.formatted(.dateTime.year().month().day()) ?? "—")
     pathLabel.stringValue = NL("位置：") + entry.url.deletingLastPathComponent().path
-    view.toolTip = entry.url.path; icon.show(entry, pixels: size > 64 ? 256 : size > 32 ? 128 : 64); surface.selected = isSelected; view.needsLayout = true
+    view.toolTip = entry.name; icon.show(entry, pixels: size > 64 ? 256 : size > 32 ? 128 : 64); surface.selected = isSelected; view.needsLayout = true
     view.setAccessibilityLabel(entry.name)
   }
   override func prepareForReuse() { super.prepareForReuse(); icon.clear(); checkbox.changed = nil; nameLabel.delegate = nil; nameLabel.abortEditing(); nameLabel.isEditable = false; nameLabel.isSelectable = false; nameLabel.isBordered = false; nameLabel.drawsBackground = false }

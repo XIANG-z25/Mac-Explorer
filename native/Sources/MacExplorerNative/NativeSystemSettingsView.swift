@@ -5,11 +5,15 @@ final class NativeSystemSettingsView: SurfaceView {
   var preferredHeight: CGFloat { status.stringValue.isEmpty ? 28 : 58 }
   var onHeightChange: (() -> Void)?
   private let integration: NativeSystemIntegration
-  private let viewer = EDButton(title: NL("使用 Mac Explorer 显示文件"), style: .checkbox)
-  private let help = NativeHelpButton(text: NL("使用 Mac Explorer 处理部分系统“在文件夹中显示”请求；关闭后恢复原设置。Finder 仍保留。"), accessibilityLabel: NL("系统文件查看器说明"))
+  private let viewer = EDButton(title: "", style: .checkbox)
+  private let help: NativeHelpButton
   private let status = label("", size: 12)
   init(integration: NativeSystemIntegration) {
-    self.integration = integration; super.init(frame: .zero); color = .clear
+    self.integration = integration
+    let appName = Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String ?? "Mac Explorer"
+    help = NativeHelpButton(text: NL("让支持系统文件查看器的软件将“在 Finder 中显示”等请求交给 {0}。关闭后恢复启用前的设置。", appName), accessibilityLabel: NL("系统文件查看器说明"))
+    super.init(frame: .zero); color = .clear
+    viewer.title = NL("使用 {0} 显示文件", appName)
     [viewer, help, status].forEach(addSubview)
     viewer.onPress = { [weak self] in self?.toggleViewer() }
     refreshViewer()
@@ -21,7 +25,8 @@ final class NativeSystemSettingsView: SurfaceView {
   }
   @objc private func toggleViewer() {
     let enabling = !viewer.checked
-    let alert = NSAlert(); alert.messageText = enabling ? NL("使用 Mac Explorer 显示文件？") : NL("恢复原文件查看器设置？")
+    let appName = Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String ?? "Mac Explorer"
+    let alert = NSAlert(); alert.messageText = enabling ? NL("使用 {0} 显示文件？", appName) : NL("恢复原文件查看器设置？")
     alert.addButton(withTitle: NL("确定")); alert.addButton(withTitle: NL("取消"))
     guard alert.runModal() == .alertFirstButtonReturn else { refreshViewer(); return }
     do { _ = try integration.fileViewer.perform(enabling ? "enable" : "restore"); status.stringValue = NL("已保存") }

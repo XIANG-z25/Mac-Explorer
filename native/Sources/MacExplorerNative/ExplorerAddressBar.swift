@@ -54,7 +54,7 @@ final class ExplorerAddressBar: NSView, NSTextFieldDelegate {
   override init(frame: NSRect) {
     super.init(frame: frame)
     field.isBordered = false; field.drawsBackground = false; field.focusRingType = .none
-    field.font = .systemFont(ofSize: 13); field.textColor = ExplorerPalette.text
+    field.font = ExplorerTypography.font(); field.textColor = ExplorerPalette.text
     field.target = self; field.action = #selector(submit); field.delegate = self
     field.setAccessibilityLabel(NL("文件夹地址"))
     crumbs.wantsLayer = true; crumbs.layer?.masksToBounds = true
@@ -148,7 +148,7 @@ final class ExplorerAddressBar: NSView, NSTextFieldDelegate {
       let name = pathLabel(target)
       let item = ExplorerButton(title: name) { [weak self] in guard let self else { return }; if target == self.url { self.beginEditing() } else { self.onNavigate?(target) } }
       item.onContextMenu = { [weak self] in self?.addressMenu(target, event: $0) }; item.toolTip = target == url ? NL("单击编辑路径") : target.path
-      let width = (name as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 12)]).width + 16
+      let width = (name as NSString).size(withAttributes: [.font: ExplorerTypography.font()]).width + 16
       item.horizontalPadding = 8; item.frame = NSRect(x: x, y: 0, width: width, height: 27); crumbs.addSubview(item); x += width
       let arrow = ExplorerButton(icon: "chevronRight"); arrow.iconDimension = 13; arrow.setAccessibilityLabel(NL("{0} 的子文件夹", name)); arrow.frame = NSRect(x: x, y: 0, width: 18, height: 27)
       arrow.onPress = { [weak self, weak arrow] in self?.showFolders(target, anchor: arrow) }; crumbs.addSubview(arrow); x += 18
@@ -192,7 +192,7 @@ final class ExplorerSearchBox: NSView {
   override init(frame: NSRect) {
     super.init(frame: frame)
     field.isBordered = false; field.drawsBackground = false; field.focusRingType = .none
-    field.font = .systemFont(ofSize: 12); field.textColor = ExplorerPalette.text
+    field.font = ExplorerTypography.font(); field.textColor = ExplorerPalette.text
     field.target = self; field.action = #selector(submit)
     field.setAccessibilityLabel(NL("搜索文件"))
     addSubview(field); addSubview(icon)

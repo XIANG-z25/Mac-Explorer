@@ -51,6 +51,8 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
     } else {
       defaults = .standard
     }
+    ExplorerDailyProfile.configure(defaults, validation: smoke != nil || comparison != nil)
+    ExplorerTypography.configure(defaults)
     sessionDefaults = defaults
     NativeLanguage.load(from: Bundle.main.resourceURL!.appendingPathComponent("locales"))
     NativeLanguage.mode = smoke != nil || comparison != nil ? "zh-CN" : defaults.string(forKey: "language") ?? "system"
@@ -59,7 +61,7 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
     systemIntegration = NativeSystemIntegration(defaults: defaults, onWake: { [weak self] in
       self?.summon()
     })
-    versionControl.setEnabled(defaults.object(forKey: "versionControl") as? Bool ?? true)
+    versionControl.setEnabled(!ExplorerDailyProfile.enabled(defaults) && (defaults.object(forKey: "versionControl") as? Bool ?? false))
     let home = ProcessInfo.processInfo.environment["EXPLORER_NATIVE_HOME"].map { URL(fileURLWithPath: $0) } ?? FileManager.default.homeDirectoryForCurrentUser
     browser = BrowserController(initial: NativeStartLocation.initialURL(explicit: explicitLocation, defaults: defaults, home: home), defaults: defaults)
     if smoke != nil || comparison != nil { browser.filePasteboard = NSPasteboard(name: .init("local.macexplorer.native-test.\(ProcessInfo.processInfo.processIdentifier)")) }
@@ -85,11 +87,12 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
       (NSApp.keyWindow?.firstResponder as? NSView)?.needsDisplay = true
       return event
     }
-    if smoke == nil && comparison == nil { NativeUpdateCoordinator.current().startAutomaticChecks() }
+    if smoke == nil && comparison == nil && !ExplorerDailyProfile.isCustomBuild { NativeUpdateCoordinator.current().startAutomaticChecks() }
     makeMenus()
     window.makeKeyAndOrderFront(nil)
     NSApp.activate(ignoringOtherApps: true)
-    if smoke == nil && comparison == nil && argument("--path") == nil && pendingExternalURLs.isEmpty { restoreWindows(defaults: defaults) }
+    if smoke == nil && comparison == nil { browser.reconnectSavedServers() }
+    if smoke == nil && comparison == nil && argument("--path") == nil && pendingExternalURLs.isEmpty && !NativeStartLocation.hasExplicitPreference(defaults) { restoreWindows(defaults: defaults) }
     if !pendingExternalURLs.isEmpty { let urls = pendingExternalURLs; pendingExternalURLs = []; openExternal(urls) }
     if let comparison, let report = argument("--report") {
       Task { @MainActor in

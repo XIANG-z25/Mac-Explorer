@@ -23,15 +23,30 @@ public enum NativeSessions {
 }
 
 
-/// Only the two supported landing pages can be persisted; explicit paths take precedence.
+/// Supported Explorer landing pages can be persisted; explicit paths take precedence.
 public enum NativeStartLocation: String, Sendable {
-  case home, computer
+  case home, computer, desktop, downloads, documents, pictures, music, movies, applications
   public static let preferenceKey = "startLocation"
+  /// A chosen launch page takes precedence over a saved window session. An
+  /// absent or invalid preference keeps the familiar session-restore behavior.
+  public static func hasExplicitPreference(_ defaults: UserDefaults) -> Bool {
+    defaults.string(forKey: preferenceKey).flatMap(Self.init(rawValue:)) != nil
+  }
   public static func load(_ defaults: UserDefaults) -> Self {
     defaults.string(forKey: preferenceKey).flatMap(Self.init(rawValue:)) ?? .home
   }
   public func url(home: URL) -> URL {
-    self == .computer ? URL(string: "explorer://computer")! : home
+    switch self {
+    case .computer: return URL(string: "explorer://computer")!
+    case .home: return home
+    case .desktop: return home.appendingPathComponent("Desktop", isDirectory: true)
+    case .downloads: return home.appendingPathComponent("Downloads", isDirectory: true)
+    case .documents: return home.appendingPathComponent("Documents", isDirectory: true)
+    case .pictures: return home.appendingPathComponent("Pictures", isDirectory: true)
+    case .music: return home.appendingPathComponent("Music", isDirectory: true)
+    case .movies: return home.appendingPathComponent("Movies", isDirectory: true)
+    case .applications: return home == FileManager.default.homeDirectoryForCurrentUser ? URL(fileURLWithPath: "/Applications", isDirectory: true) : home.appendingPathComponent("Applications", isDirectory: true)
+    }
   }
   public static func initialURL(explicit: String?, defaults: UserDefaults, home: URL) -> URL {
     if let explicit { return NativeSessions.validLocation(explicit) ?? URL(fileURLWithPath: explicit) }

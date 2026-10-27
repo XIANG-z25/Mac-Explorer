@@ -17,6 +17,7 @@ enum NativeStartLocationChecks {
   static func run(output: URL) async throws -> [String] {
     let fm = FileManager.default, root = fm.temporaryDirectory.appendingPathComponent("native-start-location-" + UUID().uuidString)
     try fm.createDirectory(at: root, withIntermediateDirectories: true)
+    try fm.createDirectory(at: root.appendingPathComponent("Downloads"), withIntermediateDirectories: true)
     let suite = "local.macexplorer.native-start-location." + UUID().uuidString, defaults = UserDefaults(suiteName: suite)!
     defaults.set(false, forKey: "versionControl")
     let originalMenu = NSApp.mainMenu, originalWindowsMenu = NSApp.windowsMenu, originalKey = NSApp.keyWindow
@@ -41,7 +42,7 @@ enum NativeStartLocationChecks {
     try check(control.title == NL("个人文件夹"), "General settings retain the existing personal-folder default")
     control.performClick(nil)
     let options = children(first).compactMap(\.contentView).flatMap(descendants).filter { $0.accessibilityRole() == .menuItem }.compactMap { $0.accessibilityLabel() }
-    try check(options == [NL("此电脑"), NL("个人文件夹")], "Startup picker exposes exactly This PC and Personal folder")
+    try check(options == [NL("此电脑"), NL("个人文件夹"), NL("桌面"), NL("下载"), NL("文档"), NL("图片"), NL("音乐"), NL("视频"), NL("应用程序")], "Startup picker exposes the standard sidebar locations")
     try choose(NL("此电脑"), owner: first)
     try check(defaults.string(forKey: NativeStartLocation.preferenceKey) == "computer" && control.title == NL("此电脑"), "Choosing This PC saves the stable setting value")
     try check(a.directory == root && b.directory == root && a.tabs.count == 1 && b.tabs.count == 1, "Changing the default leaves both existing windows and tabs in place")
@@ -74,6 +75,10 @@ enum NativeStartLocationChecks {
     try picker(in: owner).performClick(nil); try choose(NL("个人文件夹"), owner: owner); ExplorerDialogs.close(in: owner)
     current.newTab(); try await until { !current.loading }
     try check(current.directory.path == root.path && defaults.string(forKey: NativeStartLocation.preferenceKey) == "home", "Choosing Personal folder applies to subsequent tabs")
+    current.executeAction("settings"); try await until { ExplorerDialogs.isPresenting(in: owner) }
+    try picker(in: owner).performClick(nil); try choose(NL("下载"), owner: owner); ExplorerDialogs.close(in: owner)
+    current.newTab(); try await until { !current.loading }
+    try check(current.directory.path == root.appendingPathComponent("Downloads").path && defaults.string(forKey: NativeStartLocation.preferenceKey) == "downloads", "Choosing Downloads applies to subsequent tabs")
     dock.performActionForItem(at: 0); try await until { !delegate.browser.loading }
     try check(delegate.browser.directory.path == root.path, "New windows also follow Personal folder")
     try NativeSessions.save([NativeSavedWindow(locations: ["explorer://computer", root.absoluteString], frame: "")], to: defaults)

@@ -50,7 +50,7 @@ final class ExplorerMenu: NSObject {
   static func dismiss() { current?.close(); current = nil }
 
   static func fittedWidth(_ items: [ExplorerMenuItem], submenu: Bool, quickActions: [ExplorerMenuItem] = []) -> CGFloat {
-    let font = NSFont.systemFont(ofSize: 12)
+    let font = ExplorerTypography.font()
     let contentWidth = items.map { item -> CGFloat in
       let title = (item.title as NSString).size(withAttributes: [.font: font]).width
       let trailing: CGFloat = !item.children.isEmpty || item.loadChildren != nil ? 34 : item.shortcut.isEmpty ? 12 : (item.shortcut as NSString).size(withAttributes: [.font: font]).width + 28
@@ -185,7 +185,6 @@ private final class MenuQuickAction: NSButton {
   override func draw(_ dirtyRect: NSRect) {
     if hovered && isEnabled { ExplorerPalette.hover.setFill(); NSBezierPath(roundedRect: bounds, xRadius: 4, yRadius: 4).fill() }
     if let icon = item.icon { ExplorerIcons.image(icon, size: 18).draw(in: NSRect(x: bounds.midX - 9, y: 8, width: 18, height: 18), from: .zero, operation: .sourceOver, fraction: isEnabled ? 1 : 0.35, respectFlipped: true, hints: nil) }
-    NSGraphicsContext.current?.cgContext.setShouldSmoothFonts(false)
     let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 10), .foregroundColor: ExplorerPalette.text.withAlphaComponent(isEnabled ? 1 : 0.35)]
     let text = title as NSString; text.draw(at: NSPoint(x: bounds.midX - text.size(withAttributes: attrs).width / 2, y: 32), withAttributes: attrs)
   }
@@ -215,8 +214,7 @@ private final class MenuRow: NSView {
     }
     if let icon = item.icon { ExplorerIcons.image(icon, size: 16, color: color).draw(in: NSRect(x: 30, y: 8, width: 16, height: 16), from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil) }
     if let image = item.applicationImage { image.draw(in: NSRect(x: 30, y: 8, width: 16, height: 16), from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil) }
-    NSGraphicsContext.current?.cgContext.setShouldSmoothFonts(false)
-    let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 12), .foregroundColor: color]
+    let attrs: [NSAttributedString.Key: Any] = [.font: ExplorerTypography.font(), .foregroundColor: color]
     (item.title as NSString).draw(at: NSPoint(x: 56, y: 8), withAttributes: attrs)
     if !item.children.isEmpty || item.loadChildren != nil { ExplorerIcons.image("chevronRight", size: 12, color: color).draw(in: NSRect(x: bounds.width - 22, y: 10, width: 12, height: 12), from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil) }
     else if !item.shortcut.isEmpty {

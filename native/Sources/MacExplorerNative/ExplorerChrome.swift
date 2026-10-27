@@ -43,11 +43,10 @@ enum ExplorerPalette {
   }
 }
 
-private let explorerLabelFont = NSFont(name: "PingFangSC-Regular", size: 12) ?? NSFont.systemFont(ofSize: 12, weight: .regular)
+private var explorerLabelFont: NSFont { ExplorerTypography.font() }
 
 private func drawExplorerText(_ text: String, in rect: NSRect, color: NSColor = ExplorerPalette.text) {
   guard rect.width > 0, rect.height > 0 else { return }
-  NSGraphicsContext.current?.cgContext.setShouldSmoothFonts(false)
   let paragraph = NSMutableParagraphStyle()
   paragraph.lineBreakMode = .byTruncatingTail
   let height = ceil(explorerLabelFont.ascender - explorerLabelFont.descender)
@@ -75,7 +74,7 @@ final class ExplorerButton: NSButton {
   var iconName: String? { didSet { updateMetrics() } }
   var showsDropdown: Bool { didSet { updateMetrics() } }
   var iconDimension: CGFloat = 18 { didSet { updateMetrics() } }
-  var horizontalPadding: CGFloat = 9 { didSet { updateMetrics() } }
+  var horizontalPadding: CGFloat = 8 { didSet { updateMetrics() } }
   private var hovered = false
   private var hoverArea: NSTrackingArea?
 
@@ -106,7 +105,7 @@ final class ExplorerButton: NSButton {
     if title.isEmpty && !showsDropdown { return NSSize(width: 35, height: 34) }
     let textWidth = ceil((title as NSString).size(withAttributes: [.font: explorerLabelFont]).width)
     let pieces = (iconName == nil ? 0 : 1) + (title.isEmpty ? 0 : 1) + (showsDropdown ? 1 : 0)
-    let width = horizontalPadding * 2 + textWidth + (iconName == nil ? 0 : iconDimension) + (showsDropdown ? 12 : 0) + CGFloat(max(0, pieces - 1)) * 9
+    let width = horizontalPadding * 2 + textWidth + (iconName == nil ? 0 : iconDimension) + (showsDropdown ? 12 : 0) + CGFloat(max(0, pieces - 1)) * 6
     return NSSize(width: width, height: 34)
   }
 
@@ -154,16 +153,16 @@ final class ExplorerButton: NSButton {
         NSBezierPath(roundedRect: bounds, xRadius: 4, yRadius: 4).fill()
       }
       let count = (iconName == nil ? 0 : 1) + (title.isEmpty ? 0 : 1) + (showsDropdown ? 1 : 0)
-      let fixedWidth = (iconName == nil ? 0 : iconDimension) + (showsDropdown ? 12 : 0) + CGFloat(max(0, count - 1)) * 9
+      let fixedWidth = (iconName == nil ? 0 : iconDimension) + (showsDropdown ? 12 : 0) + CGFloat(max(0, count - 1)) * 6
       let textWidth = min(ceil((title as NSString).size(withAttributes: [.font: explorerLabelFont]).width), max(0, bounds.width - horizontalPadding * 2 - fixedWidth))
       var x = alignment == .left ? horizontalPadding : bounds.midX - (fixedWidth + textWidth) / 2
       if let iconName {
         drawExplorerImage(ExplorerIcons.image(iconName, size: iconDimension, color: iconColor), in: NSRect(x: x, y: bounds.midY - iconDimension / 2, width: iconDimension, height: iconDimension), fraction: isEnabled ? 1 : 0.35)
-        x += iconDimension + 9
+        x += iconDimension + 6
       }
       if !title.isEmpty {
         drawExplorerText(title, in: NSRect(x: x, y: bounds.minY, width: textWidth + 1, height: bounds.height), color: ExplorerPalette.text.withAlphaComponent(isEnabled ? 1 : 0.35))
-        x += textWidth + 9
+        x += textWidth + 6
       }
       if showsDropdown {
         drawExplorerImage(ExplorerIcons.image("chevronDown", size: 12), in: NSRect(x: x, y: bounds.midY - 6, width: 12, height: 12))

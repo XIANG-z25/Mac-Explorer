@@ -9,8 +9,8 @@ struct ExplorerShortcut {
 
 enum ExplorerShortcuts {
   static var actions: [ExplorerShortcut] { [
-    .init(id: "rename", title: NL("重命名"), defaults: ["Enter", "F2"]),
-    .init(id: "open", title: NL("打开项目"), defaults: ["Command+O", "Command+Down"]),
+    .init(id: "rename", title: NL("重命名"), defaults: ["F2"]),
+    .init(id: "open", title: NL("打开项目"), defaults: ["Enter", "Command+O", "Command+Down"]),
     .init(id: "copy", title: NL("复制"), defaults: ["Command+C", "Control+C"]),
     .init(id: "cut", title: NL("剪切"), defaults: ["Command+X", "Control+X"]),
     .init(id: "paste", title: NL("粘贴"), defaults: ["Command+V", "Control+V"]),
@@ -19,7 +19,7 @@ enum ExplorerShortcuts {
     .init(id: "duplicate", title: NL("创建副本"), defaults: ["Command+D"]),
     .init(id: "select-all", title: NL("全选"), defaults: ["Command+A", "Control+A"]),
     .init(id: "new-folder", title: NL("新建文件夹"), defaults: ["Command+Shift+N", "Control+Shift+N"]),
-    .init(id: "trash", title: NL("移到回收站"), defaults: ["Command+Backspace", "Command+Delete"]),
+    .init(id: "trash", title: NL("移到回收站"), defaults: ["Delete", "Command+Backspace", "Command+Delete"]),
     .init(id: "quick-look", title: NL("快速查看"), defaults: ["Space", "Command+Y"]),
     .init(id: "back", title: NL("后退"), defaults: ["Command+[", "Alt+Left"]),
     .init(id: "forward", title: NL("前进"), defaults: ["Command+]", "Alt+Right"]),
@@ -43,7 +43,7 @@ enum ExplorerShortcuts {
     .init(id: "preview", title: NL("预览窗格"), defaults: ["Command+Shift+P"]),
     .init(id: "hidden", title: NL("隐藏的项目"), defaults: ["Command+Shift+."]),
     .init(id: "details-pane", title: NL("详细信息窗格"), defaults: ["Command+I", "Control+I", "Alt+Enter"]),
-    .init(id: "refresh", title: NL("刷新"), defaults: ["F5", "Control+R"]),
+    .init(id: "refresh", title: NL("刷新"), defaults: ["F5", "Control+R", "Command+R"]),
   ] }
   static func bindings(_ id: String, overrides: [String: String]) -> [String] {
     if let value = overrides[id] { return value.isEmpty ? [] : [normalize(value)] }

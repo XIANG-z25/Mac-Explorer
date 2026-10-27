@@ -14,6 +14,15 @@ enum NativeSmoke {
       checks.append(name)
     }
     do {
+      if ProcessInfo.processInfo.arguments.contains("--smoke-grouping") {
+        checks += try await NativeGroupingChecks.run(largeRoot: root, output: report.deletingLastPathComponent())
+        try write(["passed": true, "checks": checks], to: report); NSApp.terminate(nil); return
+      }
+      if ProcessInfo.processInfo.arguments.contains("--smoke-daily") {
+        checks += try await NativeDailyChecks.run(root: root, output: report.deletingLastPathComponent())
+        try write(["passed": true, "checks": checks], to: report)
+        NSApp.terminate(nil); return
+      }
       if ProcessInfo.processInfo.arguments.contains("--smoke-vcs-edit") {
         checks += try await NativeVCSEditingChecks.run()
         try write(["passed": true, "checks": checks], to: report)
@@ -64,7 +73,7 @@ enum NativeSmoke {
       try expect(browser.selectedPaths == selected && browser.collection.selectionIndexPaths.count == 2, "selection survives details-to-icons switch")
       try expect(browser.collection.visibleItems().count < 150, "collection reuses visible items")
       let menu = browser.viewMenu()
-      try expect(menu.map(\.title) == ["超大图标", "大图标", "中图标", "小图标", "列表", "详细信息", "平铺", "内容", "详细信息窗格", "预览窗格", "显示", "应用到所有文件夹"], "View menu order matches the Electron reference")
+      try expect(menu.map(\.title) == ["超大图标", "大图标", "中图标", "小图标", "列表", "详细信息", "平铺", "内容", "详细信息窗格", "预览窗格", "显示", "设为新文件夹的默认视图", "应用到所有文件夹"], "View menu exposes default and all-folder actions")
       for index in [0, 1, 2, 3, 4, 6, 7] {
         menu[index].action?()
         window.contentView?.layoutSubtreeIfNeeded()
@@ -271,8 +280,8 @@ enum NativeSmoke {
         button.performClick(nil); try await Task.sleep(nanoseconds: 100_000_000)
         if title == "关于" {
           let text = dialogText(window).joined(separator: "\n")
-          guard text.contains("尚未检查更新"), text.contains("GPL-3.0-only"), !text.contains("当前版本："),
-                ["项目主页", "GitHub 发布页", "问题反馈", "开源许可", "检查更新"].allSatisfy({ title in dialogButtons(window).contains { $0.title == title } })
+          guard (ExplorerDailyProfile.isCustomBuild || text.contains("尚未检查更新")), text.contains("GPL-3.0-only"), !text.contains("当前版本："),
+                (["项目主页", "GitHub 发布页", "问题反馈", "开源许可"] + (ExplorerDailyProfile.isCustomBuild ? [] : ["检查更新"])).allSatisfy({ title in dialogButtons(window).contains { $0.title == title } })
           else { throw Failure(description: "About page is missing migrated content") }
         }
         try capture(window, at: output.appendingPathComponent(file))
@@ -427,7 +436,7 @@ enum NativeSmoke {
       try await Task.sleep(nanoseconds: 20_000_000)
     }
   }
-  private static func capture(_ window: NSWindow, at url: URL) throws {
+  static func capture(_ window: NSWindow, at url: URL) throws {
     guard let view = window.contentView else { throw Failure(description: "No window content") }
     view.layoutSubtreeIfNeeded()
     view.displayIfNeeded()

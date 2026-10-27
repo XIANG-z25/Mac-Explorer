@@ -15,7 +15,8 @@ final class NativeSystemIntegration {
     self.defaults = defaults; self.onWake = onWake
     let fixtureRoot = ProcessInfo.processInfo.environment["MAC_EXPLORER_NATIVE_SYSTEM_FIXTURE"].map { URL(fileURLWithPath: $0) }
     let folder = fixtureRoot ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Mac Explorer Native")
-    fileViewer = NativeFileViewer(backupURL: folder.appendingPathComponent("native-file-viewer-backup.plist"), fixture: fixtureRoot?.appendingPathComponent("native-file-viewer-system.plist"))
+    let appID = Bundle.main.bundleIdentifier ?? "local.macexplorer.native-prototype"
+    fileViewer = NativeFileViewer(backupURL: folder.appendingPathComponent("native-file-viewer-backup.plist"), fixture: fixtureRoot?.appendingPathComponent("native-file-viewer-system.plist"), appID: appID)
     var type = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
     let result = InstallEventHandler(GetApplicationEventTarget(), { _, _, context -> OSStatus in
       guard let context else { return OSStatus(eventNotHandledErr) }

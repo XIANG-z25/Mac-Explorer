@@ -54,6 +54,11 @@ struct SystemChecks {
     _ = try viewer.perform("restore")
     try check(read(system).isEqual(to: original), "Restore all original associations")
     try check(!fm.fileExists(atPath: backup.path), "Remove completed backup")
+    let daily = NativeFileViewer(backupURL: backup, fixture: system, appID: "local.zx.macexplorer.daily")
+    _ = try daily.perform("enable")
+    try check(read(system)["global"] as? String == "local.zx.macexplorer.daily", "Independent Daily bundle owns its file-viewer preference")
+    _ = try daily.perform("restore")
+    try check(read(system).isEqual(to: original), "Daily bundle also restores the previous file-viewer settings")
     let failing = NativeFileViewer(backupURL: backup, fixture: system, failFirstWrite: true)
     try rejected("partial preference save") { _ = try failing.perform("enable") }
     try check(read(system).isEqual(to: original), "Rollback partial preference write")

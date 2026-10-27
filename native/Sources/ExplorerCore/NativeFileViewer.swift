@@ -9,12 +9,14 @@ public struct NativeFileViewerState {
 
 public final class NativeFileViewer {
   // NSFileViewer is a compatibility preference, not a complete Finder replacement.
-  private let appID = "local.macexplorer.native-prototype"
+  private let appID: String
   let domain = "com.apple.LaunchServices/com.apple.launchservices.secure" as CFString
   let key = "NSFileViewer" as CFString
   private let testFile: URL?
   private let backupURL: URL
-  public init(backupURL: URL, fixture: URL? = nil, failFirstWrite: Bool = false) { self.backupURL = backupURL; self.testFile = fixture; self.failNextWrite = fixture != nil && failFirstWrite }
+  public init(backupURL: URL, fixture: URL? = nil, failFirstWrite: Bool = false, appID: String = "local.macexplorer.native-prototype") {
+    self.backupURL = backupURL; self.testFile = fixture; self.failNextWrite = fixture != nil && failFirstWrite; self.appID = appID
+  }
   private var ours: [[String: Any]] { [["LSHandlerContentType": "public.folder", "LSHandlerRoleAll": appID]] }
   let missingBackup = "缺少有效的原设置备份，无法自动恢复。"
   let conflict = "文件查看器设置已被其他应用更改，已停止操作以保留这些更改。"

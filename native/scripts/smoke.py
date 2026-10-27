@@ -10,6 +10,8 @@ import tempfile
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--skip-build", action="store_true")
+parser.add_argument("--grouping", action="store_true", help="Check grouping and large-directory layouts")
+parser.add_argument("--daily", action="store_true", help="Check the daily profile and capture its interface")
 parser.add_argument("--validation", action="store_true")
 launch = parser.add_mutually_exclusive_group()
 launch.add_argument("--foreground", dest="foreground", action="store_true", help="Use normal macOS foreground launch (default)")
@@ -49,7 +51,7 @@ with tempfile.TemporaryDirectory(prefix="mac-explorer-native-") as temporary:
         (output / "startup-report.json").write_text(startup.stdout)
         print(startup.stdout)
     with (output / "app.log").open("w") as log:
-        arguments = ["--smoke-test", str(fixture), "--report", str(report)]
+        arguments = ["--smoke-test", str(fixture), "--report", str(report)] + (["--smoke-daily"] if args.daily else []) + (["--smoke-grouping"] if args.grouping else [])
         command = [str(app)] + arguments
         if args.foreground:
             # AppKit activation assertions need a normal foreground LaunchServices launch.
