@@ -94,6 +94,23 @@ struct MetadataTransferChecks {
       try check(result.consumedMoveSources==[file],"only complete move consumes cut source")
       try check(try clean(target) && fm.contentsOfDirectory(atPath:file.deletingLastPathComponent().path).isEmpty,"no hidden holding file or journals")
     }
+    for move in [false, true] {
+      let (file, target, dest) = try fixture("smb-reserved-target-\(move)"), before = try dates(file)
+      var hooks = TransferHooks(), order: [String] = []
+      hooks.nativeCopy.synchronizedMetadata = true
+      hooks.exclusiveRename = { _, _ in throw MetadataCheckFailure("SMB must not depend on rename-stable inode numbers") }
+      hooks.copy = { _, _ in throw MetadataCheckFailure("SMB must use the synchronized descriptor copy") }
+      hooks.nativeCopy.descriptorCopy = { from, to, state, flags in
+        order.append(flags & copyfile_flags_t(COPYFILE_DATA) != 0 ? "data" : "metadata")
+        return fcopyfile(from, to, state, flags)
+      }
+      hooks.nativeCopy.synchronize = { fd in order.append("flush"); return fsync(fd) }
+      let result = transfer(file, target, move: move, hooks: hooks)
+      try check(result.errors.isEmpty && result.succeeded == [dest], "SMB-style target succeeds without renaming its copied inode")
+      try check(order == ["data", "flush", "metadata"], "SMB copy flushes data before applying file properties even when exclusive rename is supported")
+      try check(try Data(contentsOf: dest) == Data("OK".utf8) && dates(dest) == before && exists(file) != move, "SMB-style copy/move preserves dates and only consumes a verified move source")
+      try check(try clean(target), "SMB-style success leaves no private staging directories")
+    }
     for move in [false,true] {
       let(file,target,dest)=try fixture("date-skip-\(move)")
       var hooks=TransferHooks();hooks.restoreDates={_,_ in throw VerifiedTransfer.posix(ENOTSUP)}

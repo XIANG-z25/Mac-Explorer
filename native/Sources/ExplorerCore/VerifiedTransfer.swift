@@ -470,7 +470,10 @@ enum VerifiedTransfer {
       guard mkdirat(destination.parent.fd.raw, stageName, 0o700) == 0 else { throw posix() }
       stage = try TransferAnchor(destination.parent.url.appendingPathComponent(stageName))
       guard let stage else { throw posix(EIO) }
-      direct = try !FileTransferControl.measure(hooks.control, "publish.probe", phase: .preparing) { try canPublish(in: stage, hooks: hooks) }
+      // SMB can derive inode numbers from paths, so a successful rename can change
+      // identity. Reserve final names and flush data before restoring metadata.
+      direct = try hooks.nativeCopy.synchronizedMetadata || AppleDoubleCompanion.usesSidecars(destination.parent.fd.raw)
+        || !FileTransferControl.measure(hooks.control, "publish.probe", phase: .preparing) { try canPublish(in: stage, hooks: hooks) }
       let payload = direct ? destination : TransferTree(parent: stage, name: "payload")
       try hooks.checkpoint?(.beforeCopy, source.url, payload.url)
       try source.parent.validate(); try stage.validate()

@@ -51,6 +51,11 @@ final class ExplorerLoadingView: SurfaceView {
   }
 }
 
+final class ExplorerEmptyStateView: NSView {
+  override var isFlipped: Bool { true }
+  override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
 final class ExplorerRootView: SurfaceView {
   var onLayout: (() -> Void)?
   override func layout() { super.layout(); onLayout?() }
@@ -91,7 +96,9 @@ final class IconLoader {
   init() { cache.countLimit = 512 }
   func clear() { cache.removeAllObjects() }
   func request(_ entry: FileEntry, pixels: Int, completion: @escaping (NSImage) -> Void) -> () -> Void {
-    let key = "\(entry.url.path)|\(entry.modified?.timeIntervalSince1970 ?? 0)|\(pixels)"
+    // A retained file URL can keep its previous Launch Services binding cached.
+    let application = NSWorkspace.shared.urlForApplication(toOpen: URL(fileURLWithPath: entry.url.path))?.path ?? ""
+    let key = "\(entry.url.path)|\(entry.modified?.timeIntervalSince1970 ?? 0)|\(pixels)|\(application)"
     if let image = cache.object(forKey: key as NSString) { completion(image); return {} }
     let id = UUID()
     if pending[key] == nil { queue.append(key); pending[key] = []; sources[key] = (entry.url.path, pixels) }
@@ -126,7 +133,10 @@ final class IconLoader {
 final class FileIconView: NSImageView {
   private var cancel: (() -> Void)?
   private var vcsMark: String?
+  private var entry: FileEntry?
+  private var pixels = 64
   func show(_ entry: FileEntry, pixels: Int = 64) {
+    self.entry = entry; self.pixels = pixels
     cancel?(); contentTintColor = nil; vcsMark = entry.vcsMark; toolTip = entry.name; needsDisplay = true
     if entry.isDirectory && !entry.isPackage { image = ExplorerIcons.folder(size: 128, url: entry.url); cancel = nil; return }
     image = ExplorerIcons.image("document", size: 64, color: ExplorerPalette.secondary)
@@ -142,7 +152,8 @@ final class FileIconView: NSImageView {
     let dimensions = text.size(withAttributes: [.font: font])
     text.draw(at: NSPoint(x: frame.midX - dimensions.width / 2, y: frame.midY - dimensions.height / 2), withAttributes: [.font: font, .foregroundColor: NSColor.white])
   }
-  func clear() { cancel?(); cancel = nil; vcsMark = nil; image = nil; toolTip = nil }
+  func refresh() { if let entry { show(entry, pixels: pixels) } }
+  func clear() { cancel?(); cancel = nil; entry = nil; vcsMark = nil; image = nil; toolTip = nil }
   deinit { cancel?() }
 }
 
@@ -196,6 +207,11 @@ final class MetadataCell: NSTableCellView {
   required init?(coder: NSCoder) { fatalError() }
   override func layout() { super.layout(); let height = max(17, ceil(value.font?.ascender ?? 13) - floor(value.font?.descender ?? -3) + 2); value.frame = NSRect(x: 12, y: (bounds.height - height) / 2, width: max(0, bounds.width - 24), height: height) }
 }
+final class ExplorerTableHeaderView: NSTableHeaderView {
+  var onMenu: ((NSEvent) -> Void)?
+  override func rightMouseDown(with event: NSEvent) { if let onMenu { onMenu(event) } else { super.rightMouseDown(with: event) } }
+}
+
 final class ExplorerHeaderCell: NSTableHeaderCell {
   var ascending: Bool?
   override func draw(withFrame fullFrame: NSRect, in controlView: NSView) {
@@ -216,7 +232,7 @@ final class ExplorerHeaderCell: NSTableHeaderCell {
   override func drawSortIndicator(withFrame cellFrame: NSRect, in controlView: NSView, ascending: Bool, priority: Int) {}
 }
 final class FileRowView: NSTableRowView {
-  var hovered = false { didSet { (view(atColumn: 0) as? NameCell)?.checkbox.hovered = hovered; needsDisplay = true } }
+  var hovered = false { didSet { for column in 0..<numberOfColumns { (view(atColumn: column) as? NameCell)?.checkbox.hovered = hovered }; needsDisplay = true } }
   override func updateTrackingAreas() {
     super.updateTrackingAreas(); trackingAreas.forEach(removeTrackingArea)
     addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self))
@@ -287,6 +303,15 @@ final class FileTableView: NSTableView {
   }
 }
 final class FileCollectionView: NSCollectionView {
+  override func setFrameSize(_ newSize: NSSize) {
+    var size = newSize
+    if let layout = collectionViewLayout as? ExplorerCollectionLayout, layout.mode == .list {
+      // NSCollectionView can propose the viewport width during relayout. Horizontal
+      // List content must keep its full document width for NSClipView to scroll it.
+      size.width = max(size.width, layout.collectionViewContentSize.width)
+    }
+    super.setFrameSize(size)
+  }
   var isFileRow: (Int) -> Bool = { _ in true }
   var onGroupClick: ((Int) -> Void)?
   var openSelection: (() -> Void)?; var previewSelection: (() -> Void)?; var showContext: ((NSEvent) -> Void)?; var renameSelection: (() -> Void)?; var trashSelection: (() -> Void)?
@@ -411,7 +436,7 @@ final class ExplorerCollectionLayout: NSCollectionViewLayout {
   override var collectionViewContentSize: NSSize { contentSize }
   override func shouldInvalidateLayout(forBoundsChange newBounds: NSRect) -> Bool { newBounds.size != collectionView?.bounds.size }
   override func layoutAttributesForItem(at indexPath: IndexPath) -> NSCollectionViewLayoutAttributes? {
-    guard indexPath.item >= 0, indexPath.item < count else { return nil }
+    guard indexPath.section == 0, indexPath.item >= 0, indexPath.item < count else { return nil }
     if !groupHeaderRows.isEmpty {
       guard groupedFrames.indices.contains(indexPath.item) else { return nil }
       let attributes = NSCollectionViewLayoutAttributes(forItemWith: indexPath); attributes.frame = groupedFrames[indexPath.item]; return attributes
@@ -420,6 +445,26 @@ final class ExplorerCollectionLayout: NSCollectionViewLayout {
     let row = mode == .list ? indexPath.item % rows : indexPath.item / columns
     let value = NSCollectionViewLayoutAttributes(forItemWith: indexPath)
     value.frame = NSRect(x: inset.width + CGFloat(column) * (cell.width + gap.width), y: inset.height + CGFloat(row) * (cell.height + gap.height), width: cell.width, height: cell.height)
+    return value
+  }
+  override func layoutAttributesForDropTarget(at point: NSPoint) -> NSCollectionViewLayoutAttributes? {
+    guard NSRect(origin: .zero, size: contentSize).contains(point) else { return nil }
+    let column = max(0, Int((point.x - inset.width) / (cell.width + gap.width)))
+    let row = max(0, Int((point.y - inset.height) / (cell.height + gap.height)))
+    let item = mode == .list ? column * rows + row : row * columns + column
+    if let value = layoutAttributesForItem(at: IndexPath(item: item, section: 0)), value.frame.contains(point) { return value }
+    return layoutAttributesForInterItemGap(before: IndexPath(item: count, section: 0))
+  }
+  override func layoutAttributesForInterItemGap(before indexPath: IndexPath) -> NSCollectionViewLayoutAttributes? {
+    guard indexPath.section == 0, (0...count).contains(indexPath.item) else { return nil }
+    let value = NSCollectionViewLayoutAttributes(forInterItemGapBefore: indexPath)
+    let item = layoutAttributesForItem(at: indexPath) ?? layoutAttributesForItem(at: IndexPath(item: count - 1, section: 0))
+    let frame = item?.frame ?? NSRect(origin: NSPoint(x: inset.width, y: inset.height), size: cell)
+    if mode == .content {
+      value.frame = NSRect(x: frame.minX, y: indexPath.item < count || count == 0 ? frame.minY : frame.maxY, width: frame.width, height: 3)
+    } else {
+      value.frame = NSRect(x: indexPath.item < count || count == 0 ? frame.minX : frame.maxX, y: frame.minY, width: 3, height: frame.height)
+    }
     return value
   }
   override func layoutAttributesForElements(in rect: NSRect) -> [NSCollectionViewLayoutAttributes] {
