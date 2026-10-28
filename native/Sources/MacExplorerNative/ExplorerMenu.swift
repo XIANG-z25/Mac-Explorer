@@ -50,7 +50,7 @@ final class ExplorerMenu: NSObject {
   static func dismiss() { current?.close(); current = nil }
 
   static func fittedWidth(_ items: [ExplorerMenuItem], submenu: Bool, quickActions: [ExplorerMenuItem] = []) -> CGFloat {
-    let font = NSFont.systemFont(ofSize: 12)
+    let font = ExplorerTypography.font()
     let contentWidth = items.map { item -> CGFloat in
       let title = (item.title as NSString).size(withAttributes: [.font: font]).width
       let trailing: CGFloat = !item.children.isEmpty || item.loadChildren != nil ? 34 : item.shortcut.isEmpty ? 12 : (item.shortcut as NSString).size(withAttributes: [.font: font]).width + 28
@@ -58,13 +58,14 @@ final class ExplorerMenu: NSObject {
     }.max() ?? 0
     let quickWidth = quickActions.map { ceil(($0.title as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 10)]).width) + 12 }.max() ?? 0
     let quickRowWidth = quickActions.isEmpty ? 0 : quickWidth * CGFloat(quickActions.count) + 12 + CGFloat(quickActions.count - 1) * 2
-    return max(max(submenu ? 180 : 235, min(350, contentWidth)), quickRowWidth)
+    return max(max(submenu ? 180 : 235, min(max(350, ExplorerTypography.baseSize * 27), contentWidth)), quickRowWidth)
   }
 
   private init(items: [ExplorerMenuItem], at point: NSPoint, owner: NSWindow, parent: ExplorerMenu? = nil, quickActions: [ExplorerMenuItem] = []) {
     self.owner = owner; self.parent = parent
     let width = Self.fittedWidth(items, submenu: parent != nil, quickActions: quickActions)
-    let fullHeight = CGFloat(items.count * 33 + items.filter(\.divider).count * 11 + 12 + (quickActions.isEmpty ? 0 : 63))
+    let rowHeight = max(33, ExplorerTypography.lineHeight + 12)
+    let fullHeight = CGFloat(items.count) * rowHeight + CGFloat( items.filter(\.divider).count * 11 + 12 + (quickActions.isEmpty ? 0 : 63))
     let screen = owner.screen?.visibleFrame ?? NSScreen.main!.visibleFrame
     let viewport = owner.contentView.map { owner.convertToScreen($0.convert($0.bounds, to: nil)) } ?? owner.frame
     let region = viewport.intersection(screen)
@@ -94,11 +95,11 @@ final class ExplorerMenu: NSObject {
         let separator = SurfaceView(frame: NSRect(x: 8, y: y + 4, width: width - 16, height: 1)); separator.color = ExplorerPalette.border
         surface.addSubview(separator); y += 11
       }
-      let row = MenuRow(item: item, frame: NSRect(x: 5, y: y, width: width - 10, height: 33))
+      let row = MenuRow(item: item, frame: NSRect(x: 5, y: y, width: width - 10, height: rowHeight))
       let index = rows.count
       row.hover = { [weak self] in self?.highlight(index) }
       row.perform = { [weak self] in self?.activate(index) }
-      surface.addSubview(row); rows.append(row); y += 33
+      surface.addSubview(row); rows.append(row); y += rowHeight
     }
     owner.addChildWindow(panel, ordered: .above)
   }
@@ -185,7 +186,6 @@ private final class MenuQuickAction: NSButton {
   override func draw(_ dirtyRect: NSRect) {
     if hovered && isEnabled { ExplorerPalette.hover.setFill(); NSBezierPath(roundedRect: bounds, xRadius: 4, yRadius: 4).fill() }
     if let icon = item.icon { ExplorerIcons.image(icon, size: 18).draw(in: NSRect(x: bounds.midX - 9, y: 8, width: 18, height: 18), from: .zero, operation: .sourceOver, fraction: isEnabled ? 1 : 0.35, respectFlipped: true, hints: nil) }
-    NSGraphicsContext.current?.cgContext.setShouldSmoothFonts(false)
     let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 10), .foregroundColor: ExplorerPalette.text.withAlphaComponent(isEnabled ? 1 : 0.35)]
     let text = title as NSString; text.draw(at: NSPoint(x: bounds.midX - text.size(withAttributes: attrs).width / 2, y: 32), withAttributes: attrs)
   }
@@ -215,13 +215,16 @@ private final class MenuRow: NSView {
     }
     if let icon = item.icon { ExplorerIcons.image(icon, size: 16, color: color).draw(in: NSRect(x: 30, y: 8, width: 16, height: 16), from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil) }
     if let image = item.applicationImage { image.draw(in: NSRect(x: 30, y: 8, width: 16, height: 16), from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil) }
-    NSGraphicsContext.current?.cgContext.setShouldSmoothFonts(false)
-    let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 12), .foregroundColor: color]
-    (item.title as NSString).draw(at: NSPoint(x: 56, y: 8), withAttributes: attrs)
+    let font = ExplorerTypography.font()
+    let paragraph = NSMutableParagraphStyle(); paragraph.lineBreakMode = .byTruncatingTail
+    let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: color, .paragraphStyle: paragraph]
+    let line = ceil(font.ascender - font.descender)
+    let trailing: CGFloat = item.shortcut.isEmpty ? 28 : (item.shortcut as NSString).size(withAttributes: attrs).width + 28
+    (item.title as NSString).draw(in: NSRect(x: 56, y: bounds.midY - line / 2, width: max(0, bounds.width - 56 - trailing), height: line + 2), withAttributes: attrs)
     if !item.children.isEmpty || item.loadChildren != nil { ExplorerIcons.image("chevronRight", size: 12, color: color).draw(in: NSRect(x: bounds.width - 22, y: 10, width: 12, height: 12), from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil) }
     else if !item.shortcut.isEmpty {
       let text = item.shortcut as NSString
-      text.draw(at: NSPoint(x: bounds.width - text.size(withAttributes: attrs).width - 12, y: 8), withAttributes: attrs)
+      text.draw(at: NSPoint(x: bounds.width - text.size(withAttributes: attrs).width - 12, y: bounds.midY - line / 2), withAttributes: attrs)
     }
   }
 }

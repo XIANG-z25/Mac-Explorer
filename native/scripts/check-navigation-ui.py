@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise navigation and table-header visibility without displaying windows."""
+"""Exercise navigation, grouping, rename and preferences without displaying windows."""
 import json
 import pathlib
 import subprocess
@@ -29,7 +29,7 @@ with tempfile.TemporaryDirectory(prefix="native-navigation-ui-") as temporary:
         "-Xcc", "-I" + str(root / "Sources/SMBTransport/include"),
         "-Xcc", "-fmodule-map-file=" + str(root / "Vendor/libsmb2/include/module.modulemap"),
         "-Xcc", "-I" + str(root / "Vendor/libsmb2/include"),
-        *map(str, sources), str(root / "scripts/NavigationUIChecks.swift"), *map(str, objects), "-o", str(executable),
+        *map(str, sources), str(root / "scripts/WorkflowUIChecks.swift"), str(root / "scripts/NavigationUIChecks.swift"), *map(str, objects), "-o", str(executable),
     ], check=True)
     subprocess.run([str(executable), str(root / "Resources/locales"), str(output)], check=True, timeout=60)
 data = json.loads(report.read_text())

@@ -53,6 +53,7 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
     } else {
       defaults = .standard
     }
+    ExplorerTypography.configure(defaults)
     sessionDefaults = defaults
     NativeLanguage.load(from: Bundle.main.resourceURL!.appendingPathComponent("locales"))
     NativeLanguage.mode = smoke != nil || comparison != nil ? "zh-CN" : defaults.string(forKey: "language") ?? "system"
@@ -88,6 +89,7 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
       return event
     }
     if smoke == nil && comparison == nil { NativeUpdateCoordinator.current().startAutomaticChecks() }
+    if smoke == nil && comparison == nil { browser.reconnectSavedServers() }
     makeMenus()
     window.makeKeyAndOrderFront(nil)
     NSApp.activate(ignoringOtherApps: true)
@@ -167,7 +169,7 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
     let source = browser ?? BrowserController(initial: home, defaults: sessionDefaults ?? .standard)
     if browser == nil { source.home = home }
     let top = window.map { NSPoint(x: $0.frame.minX + 180, y: $0.frame.maxY - 20) } ?? NSEvent.mouseLocation
-    createWindow(tab: BrowserTab(history: [NativeStartLocation.load(source.defaults).url(home: source.home)]), source: source, at: top)
+    createWindow(tab: BrowserTab(history: [NativeStartLocation.load(source.defaults).url(home: source.home, defaults: source.defaults)]), source: source, at: top)
   }
 
   private func summon() {

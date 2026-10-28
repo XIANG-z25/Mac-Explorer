@@ -100,6 +100,15 @@ enum LatestCoreChecks {
       defaults.set(invalid, forKey: NativeStartLocation.preferenceKey)
       try expect(NativeStartLocation.load(defaults).url(home: root) == root, "Unknown startup values safely fall back without opening arbitrary paths")
     }
+    defaults.set("custom", forKey: NativeStartLocation.preferenceKey)
+    defaults.set(folder.path, forKey: NativeStartLocation.customPathKey)
+    try expect(NativeStartLocation.initialURL(explicit: nil, defaults: defaults, home: root).path == folder.path, "Custom startup folder is used when present")
+    try expect(NativeStartLocation.initialURL(explicit: "explorer://computer", defaults: defaults, home: root).absoluteString == "explorer://computer", "Explicit paths still override a custom default")
+    for invalid in ["relative", "/missing-" + UUID().uuidString, "smb://server/share", "bad\0path"] {
+      defaults.set(invalid, forKey: NativeStartLocation.customPathKey)
+      try expect(NativeStartLocation.initialURL(explicit: nil, defaults: defaults, home: root) == root, "Invalid custom folder falls back to home")
+    }
+    defaults.removeObject(forKey: NativeStartLocation.customPathKey)
     defaults.removeObject(forKey: NativeStartLocation.preferenceKey)
     let windows = [NativeSavedWindow(locations: [folder.absoluteString, "explorer://trash", "https://example.com", "file://evil.example/etc/passwd", "explorer://unknown"], frame: "{{0, 0}, {1000, 700}}")]
     try NativeSessions.save(windows, to: defaults)

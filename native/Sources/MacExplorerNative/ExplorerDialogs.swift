@@ -12,6 +12,9 @@ struct EDPropertyValues {
 /// tuple element unchanged, with an Electron-style accelerator (or "" to clear).
 enum ExplorerDialogs {
   fileprivate static var presentations: [ObjectIdentifier: EDPresentation] = [:]
+  static func refreshTypography(in window: NSWindow, by delta: CGFloat) {
+    presentations[ObjectIdentifier(window)]?.refreshTypography(by: delta)
+  }
   static func close(in window: NSWindow) { presentations[ObjectIdentifier(window)]?.close() }
   static func isPresenting(in window: NSWindow) -> Bool { presentations[ObjectIdentifier(window)] != nil }
 
@@ -31,6 +34,39 @@ enum ExplorerDialogs {
     }
     dialog.present(focus: form.field)
     form.field.selectText(nil)
+  }
+
+  static func batchRename(in window: NSWindow, sources: [URL], submit: @escaping (BatchRenameOptions) -> Void) {
+    let form = EDBatchRenameForm(sources: sources)
+    let body = EDScrollingBody(); body.flow.padding = 0
+    body.flow.add(form) { _ in (ExplorerTypography.rowHeight + 8) * 14 }
+    let dialog = EDPresentation(parent: window, title: NL("批量重命名"), size: NSSize(width: max(560, ExplorerTypography.baseSize * 28), height: 640), body: body)
+    dialog.surface.primary.title = NL("重命名 {0} 项", sources.count)
+    form.onChange = { [weak dialog, weak form] in dialog?.surface.primary.isEnabled = form?.isValid ?? false }
+    form.onChange?()
+    dialog.onSubmit = { [weak dialog, weak form] in
+      guard let dialog, let form, form.isValid else { return }
+      dialog.close(); submit(form.options)
+    }
+    dialog.present(focus: form.sourceName)
+    form.sourceName.selectText(nil)
+  }
+
+  static func batchRenameCollision(in window: NSWindow, conflicts: [BatchRenameConflict], keepBoth: @escaping () -> Void) {
+    let alert = NSAlert()
+    alert.messageText = NL("发现同名项目")
+    let formatter = ByteCountFormatter(); formatter.countStyle = .file
+    func size(_ value: Int64?) -> String { value.map { formatter.string(fromByteCount: $0) } ?? NL("文件夹或未知大小") }
+    let shown = conflicts.prefix(4).map { conflict in
+      NL("来源：{0}（{1}）\n现有：{2}（{3}）", conflict.source.lastPathComponent, size(conflict.sourceSize), conflict.destination.lastPathComponent, size(conflict.destinationSize))
+    }
+    let more = conflicts.count > shown.count ? "\n" + NL("另有 {0} 个同名目标。", conflicts.count - shown.count) : ""
+    alert.informativeText = shown.joined(separator: "\n\n") + more
+    alert.addButton(withTitle: NL("创建名称 (1)"))
+    alert.addButton(withTitle: NL("取消"))
+    alert.beginSheetModal(for: window) { response in
+      if response == .alertFirstButtonReturn { keepBoth() }
+    }
   }
 
   static func confirm(in window: NSWindow, title: String, detail: String, confirmTitle: String, remember: ((Bool) -> Void)? = nil, action: @escaping () -> Void) {
@@ -93,7 +129,7 @@ enum ExplorerDialogs {
     initialTab: Int = 0
   ) {
     let body = EDSettingsBody(theme: theme, toolbar: toolbar, shortcutRows: shortcutRows, onTheme: onTheme, onToolbar: onToolbar, onShortcut: onShortcut, shortcutDefaults: shortcutDefaults, folderDefaults: folderDefaults, onFolderDefaults: onFolderDefaults, onResetFolders: onResetFolders)
-    let dialog = EDPresentation(parent: window, title: NL("设置"), size: NSSize(width: 560, height: 700), body: body, compact: true, draggable: true)
+    let dialog = EDPresentation(parent: window, title: NL("设置"), size: NSSize(width: max(560, ExplorerTypography.baseSize * 32), height: 700), body: body, compact: true, draggable: true)
     dialog.surface.cancel.isHidden = true
     dialog.surface.primary.title = NL("关闭")
     dialog.onSubmit = { [weak dialog] in dialog?.close() }
@@ -127,7 +163,7 @@ private enum EDColors {
 
 private func edLabel(_ text: String, size: CGFloat = 12, weight: NSFont.Weight = .regular, wraps: Bool = false, selectable: Bool = false) -> NSTextField {
   let label = ExplorerTextField(labelWithString: text)
-  label.font = .systemFont(ofSize: size, weight: weight)
+  label.font = ExplorerTypography.font(ofSize: size == 12 ? 13 : size, weight: weight)
   label.textColor = ExplorerPalette.text
   label.isSelectable = selectable
   label.lineBreakMode = wraps ? .byCharWrapping : .byTruncatingTail
@@ -140,14 +176,13 @@ private func edLabel(_ text: String, size: CGFloat = 12, weight: NSFont.Weight =
 private func edTextHeight(_ text: String, width: CGFloat, size: CGFloat = 12) -> CGFloat {
   let paragraph = NSMutableParagraphStyle()
   paragraph.lineBreakMode = .byCharWrapping
-  let rect = (text as NSString).boundingRect(with: NSSize(width: max(1, width), height: 100_000), options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: [.font: NSFont.systemFont(ofSize: size), .paragraphStyle: paragraph])
+  let rect = (text as NSString).boundingRect(with: NSSize(width: max(1, width), height: 100_000), options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: [.font: ExplorerTypography.font(ofSize: size == 12 ? 13 : size), .paragraphStyle: paragraph])
   return max(18, ceil(rect.height) + 2)
 }
 
 private func edDrawText(_ text: String, in rect: NSRect, size: CGFloat = 12, weight: NSFont.Weight = .regular, color: NSColor = ExplorerPalette.text, alignment: NSTextAlignment = .left) {
   guard rect.width > 0 else { return }
-  NSGraphicsContext.current?.cgContext.setShouldSmoothFonts(false)
-  let font = NSFont.systemFont(ofSize: size, weight: weight)
+  let font = ExplorerTypography.font(ofSize: size == 12 ? 13 : size, weight: weight)
   let paragraph = NSMutableParagraphStyle()
   paragraph.lineBreakMode = .byTruncatingTail
   paragraph.alignment = alignment
@@ -191,7 +226,7 @@ fileprivate final class EDPresentation {
   private weak var parent: NSWindow?
   private weak var previousResponder: NSResponder?
   private let parentID: ObjectIdentifier
-  private let desiredSize: NSSize
+  private var desiredSize: NSSize
   private let panel: EDPanel
   private let dim: EDDimPanel
   fileprivate let surface: EDSurface
@@ -289,6 +324,11 @@ fileprivate final class EDPresentation {
     if let focus { panel.makeFirstResponder(focus) }
   }
 
+  fileprivate func refreshTypography(by delta: CGFloat) {
+    ExplorerTypography.resizeControls(in: surface, by: delta)
+    if let settings = surface.settingsBody { settings.refreshTypography(); desiredSize.width = max(560, ExplorerTypography.baseSize * 32); position() }
+    surface.needsLayout = true; surface.layoutSubtreeIfNeeded()
+  }
   fileprivate func applyAppearance(_ appearance: NSAppearance?) {
     panel.appearance = appearance
     dim.appearance = appearance
@@ -358,6 +398,7 @@ fileprivate final class EDSurface: EDView {
   var onSubmit: (() -> Void)?
   var onCancel: (() -> Void)?
   private let body: NSView
+  var settingsBody: EDSettingsBody? { body as? EDSettingsBody }
   private let compact: Bool
 
   init(title: String, body: NSView, compact: Bool, draggable: Bool) {
@@ -479,7 +520,7 @@ final class EDButton: NSButton {
     self.title = title
     isBordered = false
     setButtonType(.momentaryPushIn)
-    font = .systemFont(ofSize: 12)
+    font = ExplorerTypography.font()
     focusRingType = .none
     target = self
     action = #selector(press)
@@ -493,7 +534,7 @@ final class EDButton: NSButton {
   override var acceptsFirstResponder: Bool { isEnabled }
   override var mouseDownCanMoveWindow: Bool { false }
   override var intrinsicContentSize: NSSize {
-    NSSize(width: max(style == .tab ? 80 : 87, ceil((title as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 12)]).width) + 36), height: 34)
+    NSSize(width: max(style == .tab ? 80 : 87, ceil((title as NSString).size(withAttributes: [.font: ExplorerTypography.font()]).width) + 36), height: 34)
   }
   @objc private func press() { if !readOnly { onPress?() } }
   override func updateTrackingAreas() {
@@ -557,7 +598,7 @@ final class EDButton: NSButton {
       let color = style == .primary ? EDColors.primaryText : ExplorerPalette.text
       var textRect = bounds.insetBy(dx: 8, dy: 0)
       if let iconName {
-        let textWidth = ceil((title as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 12)]).width)
+        let textWidth = ceil((title as NSString).size(withAttributes: [.font: ExplorerTypography.font()]).width)
         let left = max(8, (bounds.width - textWidth - 22) / 2)
         ExplorerIcons.image(iconName, size: 16, color: color).draw(in: NSRect(x: left, y: bounds.midY - 8, width: 16, height: 16), from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
         textRect = NSRect(x: left + 22, y: 0, width: max(0, bounds.width - left - 30), height: bounds.height)
@@ -570,13 +611,14 @@ final class EDButton: NSButton {
 
 private final class EDNameForm: EDView, NSTextFieldDelegate {
   let field = ExplorerTextField()
+  weak var extra: NSTextField?
   var onChange: ((String) -> Void)?
   private let label = edLabel(NL("名称"))
   private var editing = false
   init(value: String) {
     super.init(frame: .zero)
     field.stringValue = value
-    field.font = .systemFont(ofSize: 13)
+    field.font = ExplorerTypography.font()
     field.textColor = ExplorerPalette.text
     field.isBezeled = false
     field.isBordered = false
@@ -592,6 +634,7 @@ private final class EDNameForm: EDView, NSTextFieldDelegate {
     super.layout()
     label.frame = NSRect(x: 0, y: 0, width: bounds.width, height: 18)
     field.frame = NSRect(x: 10, y: 35, width: max(1, bounds.width - 20), height: 20)
+    extra?.frame = NSRect(x: 0, y: 75, width: bounds.width, height: 20)
   }
   override func draw(_ dirtyRect: NSRect) {
     let input = NSRect(x: 0, y: 27, width: bounds.width, height: 35)
@@ -606,6 +649,141 @@ private final class EDNameForm: EDView, NSTextFieldDelegate {
   func controlTextDidChange(_ obj: Notification) { onChange?(field.stringValue) }
   func controlTextDidBeginEditing(_ obj: Notification) { editing = true; needsDisplay = true }
   func controlTextDidEndEditing(_ obj: Notification) { editing = false; needsDisplay = true }
+}
+
+/// A compact, live-preview rule editor. The core receives only value types, so
+/// no UI state participates in the filesystem operation.
+final class EDBatchRenameForm: EDView, NSTextFieldDelegate {
+  let sourceName = ExplorerTextField()
+  let prefix = ExplorerTextField()
+  private let suffix = ExplorerTextField()
+  private let find = ExplorerTextField()
+  private let replacement = ExplorerTextField()
+  private let casing = NSPopUpButton()
+  private let removeBracketed = NSButton(checkboxWithTitle: NL("删除括号内容"), target: nil, action: nil)
+  private let sequence = NSButton(checkboxWithTitle: NL("添加数字序列"), target: nil, action: nil)
+  private let sequenceStart = ExplorerTextField()
+  private let sequencePadding = ExplorerTextField()
+  private let changeExtension = NSButton(checkboxWithTitle: NL("更改文件扩展名"), target: nil, action: nil)
+  private let fileExtension = ExplorerTextField()
+  private let preview = edLabel("", size: 12, wraps: true)
+  private let previewScroll = NSScrollView()
+  private var previewValid = true
+  private let sourceLabel = edLabel(NL("编辑源文件名"))
+  private let prefixLabel = edLabel(NL("前缀"))
+  private let suffixLabel = edLabel(NL("后缀"))
+  private let findLabel = edLabel(NL("查找"))
+  private let replacementLabel = edLabel(NL("替换为"))
+  private let casingLabel = edLabel(NL("大小写"))
+  private let startLabel = edLabel(NL("起始值"))
+  private let widthLabel = edLabel(NL("位数"))
+  private let sources: [URL]
+  private let originalSourceName: String
+  private var fields: [ExplorerTextField] { [sourceName, prefix, suffix, find, replacement, sequenceStart, sequencePadding, fileExtension] }
+  var onChange: (() -> Void)?
+
+  init(sources: [URL]) {
+    self.sources = sources
+    if let source = sources.first,
+       let values = try? source.resourceValues(forKeys: [.isDirectoryKey]),
+       values.isDirectory != true,
+       !source.pathExtension.isEmpty {
+      originalSourceName = source.deletingPathExtension().lastPathComponent
+    } else {
+      originalSourceName = sources.first?.lastPathComponent ?? ""
+    }
+    super.init(frame: .zero)
+    casing.addItems(withTitles: [NL("保留原样"), NL("小写"), NL("大写"), NL("首字母大写")])
+    casing.selectItem(at: 0)
+    sourceName.stringValue = originalSourceName
+    sequenceStart.stringValue = "1"
+    sequencePadding.stringValue = "2"
+    for field in fields {
+      field.font = ExplorerTypography.font()
+      field.delegate = self
+      field.isBezeled = true
+      field.setAccessibilityLabel(NL("重命名规则"))
+      addSubview(field)
+    }
+    for button in [removeBracketed, sequence, changeExtension] {
+      button.font = ExplorerTypography.font()
+      button.target = self
+      button.action = #selector(changed)
+      addSubview(button)
+    }
+    casing.font = ExplorerTypography.font()
+    casing.target = self
+    casing.action = #selector(changed)
+    previewScroll.documentView = preview; previewScroll.hasVerticalScroller = true; previewScroll.autohidesScrollers = true; previewScroll.drawsBackground = false
+    [casing, previewScroll, sourceLabel, prefixLabel, suffixLabel, findLabel, replacementLabel, casingLabel, startLabel, widthLabel].forEach(addSubview)
+    update()
+  }
+  required init?(coder: NSCoder) { fatalError("Use the programmatic initializer") }
+
+  var options: BatchRenameOptions {
+    let style: BatchRenameCase = [.preserve, .lowercase, .uppercase, .capitalized][max(0, min(3, casing.indexOfSelectedItem))]
+    let sequenceRule: BatchRenameSequence? = sequence.state == .on ? BatchRenameSequence(start: Int(sequenceStart.stringValue) ?? -1, padding: Int(sequencePadding.stringValue) ?? -1) : nil
+    return BatchRenameOptions(prefix: prefix.stringValue, suffix: suffix.stringValue, find: find.stringValue, replacement: replacement.stringValue, casing: style, removeTexts: removedTexts ?? [], removeBracketedContent: removeBracketed.state == .on, sequence: sequenceRule, extensionOverride: changeExtension.state == .on ? fileExtension.stringValue : nil)
+  }
+
+  private var removedTexts: [String]? {
+    FileActions.batchRenameRemovedText(original: originalSourceName, edited: sourceName.stringValue)
+  }
+
+  var isValid: Bool {
+    guard removedTexts != nil, previewValid else { return false }
+    let hasRule = sourceName.stringValue != originalSourceName || !prefix.stringValue.isEmpty || !suffix.stringValue.isEmpty || !find.stringValue.isEmpty || casing.indexOfSelectedItem != 0 || removeBracketed.state == .on || sequence.state == .on || changeExtension.state == .on
+    guard hasRule else { return false }
+    if sequence.state == .on {
+      guard (Int(sequenceStart.stringValue) ?? -1) >= 0, (0...12).contains(Int(sequencePadding.stringValue) ?? -1) else { return false }
+    }
+    let ext = fileExtension.stringValue
+    return changeExtension.state != .on || (!ext.contains("/") && !ext.contains(":") && !ext.contains("\0"))
+  }
+
+  override func layout() {
+    super.layout()
+    let width = bounds.width
+    let labelWidth = max(82, sourceLabel.intrinsicContentSize.width + 12)
+    let fieldWidth = max(80, width - labelWidth), row = ExplorerTypography.rowHeight
+    let step = row + 8
+    for (index, pair) in [(sourceLabel, sourceName), (prefixLabel, prefix), (suffixLabel, suffix), (findLabel, find), (replacementLabel, replacement)].enumerated() {
+      let y = CGFloat(index) * step
+      pair.0.frame = NSRect(x: 0, y: y, width: labelWidth - 8, height: row)
+      pair.1.frame = NSRect(x: labelWidth, y: y, width: fieldWidth, height: row)
+    }
+    casingLabel.frame = NSRect(x: 0, y: 5 * step, width: labelWidth - 8, height: row)
+    casing.frame = NSRect(x: labelWidth, y: 5 * step, width: fieldWidth, height: row)
+    removeBracketed.frame = NSRect(x: 0, y: 6 * step, width: width, height: row)
+    sequence.frame = NSRect(x: 0, y: 7 * step, width: width, height: row)
+    startLabel.frame = NSRect(x: 0, y: 8 * step, width: labelWidth - 8, height: row)
+    sequenceStart.frame = NSRect(x: labelWidth, y: 8 * step, width: 80, height: row)
+    widthLabel.frame = NSRect(x: labelWidth + 92, y: 8 * step, width: 70, height: row)
+    sequencePadding.frame = NSRect(x: labelWidth + 168, y: 8 * step, width: 80, height: row)
+    changeExtension.frame = NSRect(x: 0, y: 9 * step, width: width, height: row)
+    fileExtension.frame = NSRect(x: labelWidth, y: 10 * step, width: fieldWidth, height: row)
+    previewScroll.frame = NSRect(x: 0, y: 11 * step, width: width, height: row * 3)
+    preview.frame = NSRect(x: 0, y: 0, width: previewScroll.contentSize.width, height: max(row * 3, edTextHeight(preview.stringValue, width: previewScroll.contentSize.width, size: 12)))
+
+  }
+
+  func controlTextDidChange(_ obj: Notification) { update() }
+  @objc private func changed() { update() }
+  private func update() {
+    if sourceName.stringValue != originalSourceName, removedTexts == nil {
+      preview.stringValue = NL("源文件名只能删除文字。")
+    } else {
+      do {
+        let names = try FileActions.batchRenamePreview(sources, options: options)
+        preview.stringValue = zip(sources, names).map { $0.lastPathComponent + " → " + $1 }.joined(separator: "\n")
+        previewValid = true
+      } catch { preview.stringValue = error.localizedDescription; previewValid = false }
+    }
+    sequenceStart.isEnabled = sequence.state == .on
+    sequencePadding.isEnabled = sequence.state == .on
+    fileExtension.isEnabled = changeExtension.state == .on
+    needsLayout = true; onChange?()
+  }
 }
 
 private final class EDFlow: EDView {
@@ -624,7 +802,7 @@ private final class EDFlow: EDView {
     let inner = max(1, width - padding * 2)
     var y = padding
     for (view, height) in rows {
-      let h = height(inner)
+      let h = height(inner) + (view is EDGroup ? max(0, ExplorerTypography.lineHeight + 8 - 26) + max(0, ExplorerTypography.rowHeight - 28) : 0)
       view.frame = NSRect(x: padding, y: y, width: inner, height: h)
       view.needsLayout = true
       y += h + gap
@@ -689,7 +867,7 @@ private final class EDPropertyIdentity: EDView {
   init(title: String, icon: NSImage?, editable: Bool = false) {
     super.init(frame: .zero)
     image.image = icon; image.imageScaling = .scaleProportionallyUpOrDown
-    name.stringValue = title; name.isEditable = editable; name.isSelectable = true; name.identifier = .init("property-name"); name.setAccessibilityLabel(NL("名称")); name.isBordered = false; name.drawsBackground = false; name.font = .systemFont(ofSize: 13); name.textColor = ExplorerPalette.text
+    name.stringValue = title; name.isEditable = editable; name.isSelectable = true; name.identifier = .init("property-name"); name.setAccessibilityLabel(NL("名称")); name.isBordered = false; name.drawsBackground = false; name.font = ExplorerTypography.font(); name.textColor = ExplorerPalette.text
     addSubview(image); addSubview(name)
   }
   required init?(coder: NSCoder) { fatalError() }
@@ -774,18 +952,19 @@ private final class EDGroup: EDView {
   required init?(coder: NSCoder) { fatalError("Use the programmatic initializer") }
   override func layout() {
     super.layout()
-    content.frame = NSRect(x: 0, y: 26, width: bounds.width, height: max(1, bounds.height - 26))
+    let heading = max(26, ExplorerTypography.lineHeight + 8)
+    content.frame = NSRect(x: 0, y: heading, width: bounds.width, height: max(1, bounds.height - heading))
     arrange?(content.bounds)
   }
   override func draw(_ dirtyRect: NSRect) {
-    let width = ceil((title as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 12, weight: .semibold)]).width)
-    edDrawText(title, in: NSRect(x: 0, y: 0, width: width, height: 18), weight: .semibold)
+    let width = ceil((title as NSString).size(withAttributes: [.font: ExplorerTypography.font(weight: .semibold)]).width) + 2
+    edDrawText(title, in: NSRect(x: 0, y: 0, width: width, height: max(18, ExplorerTypography.lineHeight)), weight: .semibold)
     ExplorerPalette.border.setFill()
-    NSRect(x: width + 12, y: 9, width: max(0, bounds.width - width - 12), height: 1).fill()
+    NSRect(x: width + 12, y: max(18, ExplorerTypography.lineHeight) / 2, width: max(0, bounds.width - width - 12), height: 1).fill()
   }
 }
 
-private final class EDSettingsBody: EDView {
+final class EDSettingsBody: EDView {
   weak var browser: BrowserController?
   let tabs: [EDButton] = [NL("常规"), NL("自定义工具栏"), NL("键盘快捷键"), NL("关于")].map { EDButton(title: $0, style: .tab) }
   var didChangeTheme: ((String) -> Void)?
@@ -807,8 +986,8 @@ private final class EDSettingsBody: EDView {
   private var shortcutError: NSTextField?
   private var shortcutSave: EDButton?
   private var shortcutReset: EDButton?
-  private let allTools = ["cut", "copy", "paste", "rename", "share", "trash", "airdrop", "terminal", "undo", "refresh"]
-  private let toolLabels = ["cut": NL("剪切"), "copy": NL("复制"), "paste": NL("粘贴"), "rename": NL("重命名"), "share": NL("共享"), "trash": NL("移到回收站"), "airdrop": NL("隔空投送"), "terminal": NL("在终端中打开"), "undo": NL("撤销"), "refresh": NL("刷新")]
+  private let allTools = ["cut", "copy", "paste", "rename", "batchRename", "share", "trash", "airdrop", "terminal", "undo", "refresh"]
+  private let toolLabels = ["cut": NL("剪切"), "copy": NL("复制"), "paste": NL("粘贴"), "rename": NL("重命名"), "batchRename": NL("批量重命名"), "share": NL("共享"), "trash": NL("移到回收站"), "airdrop": NL("隔空投送"), "terminal": NL("在终端中打开"), "undo": NL("撤销"), "refresh": NL("刷新")]
 
   init(theme: String, toolbar: [String], shortcutRows: [(String, String)], onTheme: @escaping (String) -> Void, onToolbar: (([String]) -> Void)?, onShortcut: ((String, String) -> Void)?, shortcutDefaults: [String: String], folderDefaults: [String: String], onFolderDefaults: (([String: String]) -> Void)?, onResetFolders: (() -> Void)?) {
     self.theme = theme
@@ -857,6 +1036,7 @@ private final class EDSettingsBody: EDView {
     }
   }
   func openTab(_ index: Int) { select(max(0, min(3, index))) }
+  func refreshTypography() { select(section) }
   private func select(_ index: Int) {
     section = index
     resetScroll = true
@@ -898,33 +1078,67 @@ private final class EDSettingsBody: EDView {
     let arrangeAppearance: (CGFloat) -> CGFloat = { width in
       var x: CGFloat = 0, y: CGFloat = 0
       for button in buttons {
-        let itemWidth = ceil((button.title as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 13)]).width) + 46
-        if x > 0 && x + itemWidth > width { x = 0; y += 34 }
-        button.frame = NSRect(x: x, y: y, width: min(width, itemWidth), height: 28)
+        let itemWidth = ceil((button.title as NSString).size(withAttributes: [.font: ExplorerTypography.font()]).width) + 46
+        if x > 0 && x + itemWidth > width { x = 0; y += ExplorerTypography.rowHeight + 6 }
+        button.frame = NSRect(x: x, y: y, width: min(width, itemWidth), height: ExplorerTypography.rowHeight)
         x += itemWidth + 18
       }
-      return y + 28
+      return y + ExplorerTypography.rowHeight
     }
     group.arrange = { _ = arrangeAppearance($0.width) }
     content.flow.add(group) { 26 + arrangeAppearance($0) }
     if let browser {
-      let startup = EDGroup(NL("启动位置"))
-      let destination = EDChoiceRow(title: NL("默认打开"), options: [(NL("此电脑"), "computer"), (NL("个人文件夹"), "home")], value: NativeStartLocation.load(browser.defaults).rawValue) { [weak browser] value in
-        guard let location = NativeStartLocation(rawValue: value) else { return }
-        browser?.defaults.set(location.rawValue, forKey: NativeStartLocation.preferenceKey)
+      let typography = EDGroup(NL("字体大小"))
+      let font = EDChoiceRow(title: NL("界面文字"), options: (10...24).map { (NL("{0} 磅", $0), String($0)) }, value: String(Int(ExplorerTypography.baseSize))) { [weak browser] value in
+        if let size = Int(value) { browser?.defaults.set(size, forKey: ExplorerTypography.preferenceKey) }
       }
+      typography.content.addSubview(font); typography.arrange = { font.frame = $0 }
+      content.flow.add(typography) { _ in 58 }
+    }
+    if let browser {
+      let startup = EDGroup(NL("启动位置"))
+      let destinations = [(NL("此电脑"), "computer"), (NL("个人文件夹"), "home"), (NL("自选文件夹…"), "custom")]
+      let destination = EDChoiceRow(title: NL("默认打开"), options: destinations, value: NativeStartLocation.load(browser.defaults).rawValue) { [weak self, weak browser] value in
+        guard let self, let browser, let location = NativeStartLocation(rawValue: value) else { return }
+        if location != .custom { browser.defaults.set(location.rawValue, forKey: NativeStartLocation.preferenceKey); self.select(0); return }
+        guard let window = self.window else { return }
+        let picker = NSOpenPanel(); picker.canChooseFiles = false; picker.canChooseDirectories = true; picker.allowsMultipleSelection = false
+        picker.directoryURL = NativeStartLocation.custom.url(home: browser.home, defaults: browser.defaults)
+        picker.beginSheetModal(for: window) { [weak self, weak browser] result in
+          if result == .OK, let folder = picker.url {
+            browser?.defaults.set(folder.path, forKey: NativeStartLocation.customPathKey)
+            browser?.defaults.set("custom", forKey: NativeStartLocation.preferenceKey)
+          }
+          self?.select(0)
+        }
+      }
+      let folderPath = edLabel(browser.defaults.string(forKey: NativeStartLocation.customPathKey) ?? "", size: 12)
+      folderPath.toolTip = folderPath.stringValue
+      folderPath.isHidden = NativeStartLocation.load(browser.defaults) != .custom
       let restore = EDButton(title: NL("退出后恢复窗口和标签页"), style: .checkbox)
       restore.checked = browser.defaults.object(forKey: NativeSessions.restoreAfterQuitKey) as? Bool ?? false
       restore.onPress = { [weak restore, weak browser] in
         guard let restore else { return }; restore.checked.toggle()
         browser?.defaults.set(restore.checked, forKey: NativeSessions.restoreAfterQuitKey)
       }
-      startup.content.addSubview(destination); startup.content.addSubview(restore)
+      startup.content.addSubview(destination); startup.content.addSubview(restore); startup.content.addSubview(folderPath)
       startup.arrange = { rect in
         destination.frame = NSRect(x: 0, y: 0, width: rect.width, height: 32)
-        restore.frame = NSRect(x: 0, y: 40, width: rect.width, height: 28)
+        let extra: CGFloat = folderPath.isHidden ? 0 : ExplorerTypography.rowHeight + 4
+        folderPath.frame = NSRect(x: 0, y: 38, width: rect.width, height: ExplorerTypography.rowHeight)
+        restore.frame = NSRect(x: 0, y: 40 + extra, width: rect.width, height: ExplorerTypography.rowHeight)
       }
-      content.flow.add(startup) { _ in 94 }
+      content.flow.add(startup) { _ in 94 + (folderPath.isHidden ? 0 : ExplorerTypography.rowHeight + 4) }
+    }
+    if let browser {
+      let density = EDGroup(NL("布局间距"))
+      let compact = EDButton(title: NL("使用 Windows 紧凑间距"), style: .checkbox)
+      compact.checked = browser.defaults.bool(forKey: "compact")
+      compact.onPress = { [weak compact, weak browser] in
+        guard let compact else { return }; compact.checked.toggle(); browser?.defaults.set(compact.checked, forKey: "compact")
+      }
+      density.content.addSubview(compact); density.arrange = { compact.frame = NSRect(x: 0, y: 0, width: $0.width, height: ExplorerTypography.rowHeight) }
+      content.flow.add(density) { _ in 54 }
     }
     let language = EDGroup(NL("语言"))
     let row = EDChoiceRow(title: NL("界面语言"), options: [(NL("跟随系统"), "system"), ("简体中文", "zh-CN"), ("繁體中文", "zh-TW"), ("English", "en")], value: browser?.defaults.string(forKey: "language") ?? "system") { [weak self] in self?.browser?.changeLanguage($0) }
@@ -932,6 +1146,12 @@ private final class EDSettingsBody: EDView {
     language.arrange = { rect in row.frame = rect }
     content.flow.add(language) { _ in 58 }
     if let browser {
+      let remote = EDGroup(NL("远程服务器"))
+      let reconnect = EDButton(title: NL("启动时自动重连已连接过的 SMB 服务器"), style: .checkbox)
+      reconnect.checked = browser.defaults.bool(forKey: "autoReconnectSMB")
+      reconnect.onPress = { [weak reconnect, weak browser] in guard let reconnect else { return }; reconnect.checked.toggle(); browser?.defaults.set(reconnect.checked, forKey: "autoReconnectSMB") }
+      remote.content.addSubview(reconnect); remote.arrange = { reconnect.frame = NSRect(x: 0, y: 0, width: $0.width, height: ExplorerTypography.rowHeight) }
+      content.flow.add(remote) { _ in 54 }
       let terminal = EDGroup(NL("终端"))
       let selected = browser.defaults.string(forKey: NativeTerminal.preferenceKey) ?? ""
       let application = EDChoiceRow(title: NL("终端应用"), options: NativeTerminal.options(selected: selected), value: selected) { [weak browser] in browser?.defaults.set($0, forKey: NativeTerminal.preferenceKey) }
@@ -962,10 +1182,11 @@ private final class EDSettingsBody: EDView {
       }
       serverTransfer.content.addSubview(offload); serverTransfer.content.addSubview(forget)
       serverTransfer.arrange = { rect in
-        offload.frame = NSRect(x: 0, y: 0, width: rect.width, height: 28)
-        forget.frame = NSRect(x: 0, y: 34, width: 240, height: 34)
+        offload.frame = NSRect(x: 0, y: 0, width: rect.width, height: ExplorerTypography.rowHeight)
+        forget.frame = NSRect(x: 0, y: ExplorerTypography.rowHeight + 6, width: max(240, forget.intrinsicContentSize.width), height: max(34, ExplorerTypography.rowHeight))
       }
       content.flow.add(serverTransfer) { _ in 94 }
+
       let favorites = EDGroup(NL("快速访问")), extra = NativeSettingsView(browser: browser)
       favorites.content.addSubview(extra); favorites.arrange = { extra.frame = $0 }
       extra.onHeightChange = { [weak self] in self?.content.needsLayout = true }
@@ -982,8 +1203,9 @@ private final class EDSettingsBody: EDView {
       toggle.onPress = { [weak toggle, weak browser] in if let toggle { toggle.checked.toggle(); browser?.setVersionControl(toggle.checked) } }
       let help = NativeHelpButton(text: NL("仅在仓库内启用。关闭后停止状态检测与刷新；需要已安装 Git 或 SVN 命令行工具。"), accessibilityLabel: NL("版本控制说明"))
       vcs.content.addSubview(toggle); vcs.content.addSubview(help)
-      vcs.arrange = { rect in toggle.frame = NSRect(x: 0, y: 0, width: rect.width - 30, height: 28); help.frame = NSRect(x: rect.width - 24, y: 0, width: 24, height: 28) }
+      vcs.arrange = { rect in toggle.frame = NSRect(x: 0, y: 0, width: rect.width - 30, height: ExplorerTypography.rowHeight); help.frame = NSRect(x: rect.width - 24, y: 0, width: 24, height: ExplorerTypography.rowHeight) }
       content.flow.add(vcs) { _ in 54 }
+
     }
     if onFolderDefaults != nil {
       let group = EDGroup(NL("文件夹视图"))
@@ -1007,7 +1229,9 @@ private final class EDSettingsBody: EDView {
   }
   private func toolbarContent() {
     content.flow.gap = 0
-    let order = toolbar + (onToolbar == nil ? [] : allTools.filter { !toolbar.contains($0) })
+    let available = allTools
+    let visibleToolbar = toolbar.filter { available.contains($0) }
+    let order = visibleToolbar + (onToolbar == nil ? [] : available.filter { !visibleToolbar.contains($0) })
     for id in order {
       let row = EDToolbarRow(title: toolLabels[id] ?? id, icon: id == "cut" ? "scissors" : id, checked: toolbar.contains(id), editable: onToolbar != nil)
       row.onToggle = { [weak self] in
@@ -1155,6 +1379,7 @@ private final class EDSettingsBody: EDView {
     }
     content.flow.add(frequency) { _ in 34 }
     let updates = NativeUpdateView(); content.flow.add(updates) { _ in updates.preferredHeight }
+
     let linksRow = EDView()
     let links = [("项目主页", ""), ("GitHub 发布页", "/releases"), ("问题反馈", "/issues"), ("开源许可", "/blob/main/LICENSE")].map { title, path in
       let button = EDButton(title: NL(title), style: .secondary)
@@ -1205,7 +1430,7 @@ private final class EDChoiceRow: EDView {
     super.init(frame: .zero); addSubview(label); addSubview(choice); choice.setAccessibilityLabel(title)
   }
   required init?(coder: NSCoder) { fatalError() }
-  override func layout() { super.layout(); let width = min(132, bounds.width * 0.36); label.frame = NSRect(x: 0, y: 7, width: width, height: 18); choice.frame = NSRect(x: width + 20, y: 0, width: min(250, max(0, bounds.width - width - 20)), height: 32) }
+  override func layout() { super.layout(); let width = min(180, bounds.width * 0.36); label.frame = NSRect(x: 0, y: max(0, (32 - ExplorerTypography.lineHeight) / 2), width: width, height: ExplorerTypography.lineHeight); choice.frame = NSRect(x: width + 20, y: 0, width: min(250, max(0, bounds.width - width - 20)), height: 32) }
 }
 
 private final class EDToolbarRow: EDView {

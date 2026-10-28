@@ -24,18 +24,24 @@ public enum NativeSessions {
 }
 
 
-/// Only the two supported landing pages can be persisted; explicit paths take precedence.
+/// Explicit paths and saved sessions take precedence over the default landing page.
 public enum NativeStartLocation: String, Sendable {
-  case home, computer
+  case home, computer, custom
   public static let preferenceKey = "startLocation"
+  public static let customPathKey = "startFolderPath"
   public static func load(_ defaults: UserDefaults) -> Self {
     defaults.string(forKey: preferenceKey).flatMap(Self.init(rawValue:)) ?? .home
   }
-  public func url(home: URL) -> URL {
-    self == .computer ? URL(string: "explorer://computer")! : home
+  public func url(home: URL, defaults: UserDefaults = .standard) -> URL {
+    if self == .computer { return URL(string: "explorer://computer")! }
+    if self == .custom, let path = defaults.string(forKey: Self.customPathKey), path.hasPrefix("/"), !path.contains("\0") {
+      let folder = URL(fileURLWithPath: path, isDirectory: true)
+      if (try? folder.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true { return folder }
+    }
+    return home
   }
   public static func initialURL(explicit: String?, defaults: UserDefaults, home: URL) -> URL {
     if let explicit { return NativeSessions.validLocation(explicit) ?? URL(fileURLWithPath: explicit) }
-    return load(defaults).url(home: home)
+    return load(defaults).url(home: home, defaults: defaults)
   }
 }

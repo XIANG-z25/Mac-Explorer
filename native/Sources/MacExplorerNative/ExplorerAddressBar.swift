@@ -54,7 +54,7 @@ final class ExplorerAddressBar: NSView, NSTextFieldDelegate {
   override init(frame: NSRect) {
     super.init(frame: frame)
     field.isBordered = false; field.drawsBackground = false; field.focusRingType = .none
-    field.font = .systemFont(ofSize: 13); field.textColor = ExplorerPalette.text
+    field.font = ExplorerTypography.font(); field.textColor = ExplorerPalette.text
     field.target = self; field.action = #selector(submit); field.delegate = self
     field.setAccessibilityLabel(NL("文件夹地址"))
     crumbs.wantsLayer = true; crumbs.layer?.masksToBounds = true
@@ -122,8 +122,8 @@ final class ExplorerAddressBar: NSView, NSTextFieldDelegate {
     suggestionPanel = panel; window.addChildWindow(panel, ordered: .above); panel.orderFront(nil)
   }
   override func layout() {
-    super.layout(); field.frame = NSRect(x: 42, y: 8, width: max(0, bounds.width - 50), height: 20)
-    crumbs.frame = NSRect(x: 38, y: 4, width: max(0, bounds.width - 42), height: 27); rebuild()
+    super.layout(); field.frame = NSRect(x: 42, y: (bounds.height - ExplorerTypography.lineHeight) / 2, width: max(0, bounds.width - 50), height: ExplorerTypography.lineHeight)
+    crumbs.frame = NSRect(x: 38, y: 0, width: max(0, bounds.width - 42), height: bounds.height); rebuild()
   }
   private func pathLabel(_ directory: URL) -> String {
     if let labelForPath { return labelForPath(directory) }
@@ -136,20 +136,20 @@ final class ExplorerAddressBar: NSView, NSTextFieldDelegate {
   private func rebuild() {
     crumbs.subviews.forEach { $0.removeFromSuperview() }
     if let virtualTitle {
-      let item = ExplorerButton(title: virtualTitle) { [weak self] in self?.beginEditing() }; item.frame = NSRect(x: 0, y: 0, width: max(100, item.intrinsicContentSize.width), height: 27); crumbs.addSubview(item); return
+      let item = ExplorerButton(title: virtualTitle) { [weak self] in self?.beginEditing() }; item.frame = NSRect(x: 0, y: 0, width: max(100, item.intrinsicContentSize.width), height: crumbs.bounds.height); crumbs.addSubview(item); return
     }
     var urls = [URL(fileURLWithPath: "/")]
     for part in url.pathComponents.dropFirst() { urls.append(urls.last!.appendingPathComponent(part)) }
     let root = ExplorerButton(icon: "chevronRight")
     root.onPress = { [weak self, weak root] in self?.showFolders(nil, anchor: root) }; root.setAccessibilityLabel(NL("{0} 的子文件夹", NL("此电脑")))
-    root.iconDimension = 13; root.frame = NSRect(x: 0, y: 0, width: 18, height: 27); crumbs.addSubview(root)
+    root.iconDimension = 13; root.frame = NSRect(x: 0, y: 0, width: 18, height: crumbs.bounds.height); crumbs.addSubview(root)
     var x: CGFloat = 18
     for target in urls {
       let name = pathLabel(target)
       let item = ExplorerButton(title: name) { [weak self] in guard let self else { return }; if target == self.url { self.beginEditing() } else { self.onNavigate?(target) } }
       item.onContextMenu = { [weak self] in self?.addressMenu(target, event: $0) }; item.toolTip = target == url ? NL("单击编辑路径") : target.path
-      let width = (name as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 12)]).width + 16
-      item.horizontalPadding = 8; item.frame = NSRect(x: x, y: 0, width: width, height: 27); crumbs.addSubview(item); x += width
+      let width = (name as NSString).size(withAttributes: [.font: ExplorerTypography.font()]).width + 16
+      item.horizontalPadding = 8; item.frame = NSRect(x: x, y: 0, width: width, height: crumbs.bounds.height); crumbs.addSubview(item); x += width
       let arrow = ExplorerButton(icon: "chevronRight"); arrow.iconDimension = 13; arrow.setAccessibilityLabel(NL("{0} 的子文件夹", name)); arrow.frame = NSRect(x: x, y: 0, width: 18, height: 27)
       arrow.onPress = { [weak self, weak arrow] in self?.showFolders(target, anchor: arrow) }; crumbs.addSubview(arrow); x += 18
     }
@@ -192,7 +192,7 @@ final class ExplorerSearchBox: NSView {
   override init(frame: NSRect) {
     super.init(frame: frame)
     field.isBordered = false; field.drawsBackground = false; field.focusRingType = .none
-    field.font = .systemFont(ofSize: 12); field.textColor = ExplorerPalette.text
+    field.font = ExplorerTypography.font(); field.textColor = ExplorerPalette.text
     field.target = self; field.action = #selector(submit)
     field.setAccessibilityLabel(NL("搜索文件"))
     addSubview(field); addSubview(icon)
@@ -204,7 +204,7 @@ final class ExplorerSearchBox: NSView {
   required init?(coder: NSCoder) { fatalError() }
   @objc private func submit() { onSearch?(); update() }
   func update() { icon.iconName = field.stringValue.isEmpty ? "search" : "close"; needsDisplay = true }
-  override func layout() { super.layout(); field.frame = NSRect(x: 10, y: 9, width: max(0, bounds.width - 43), height: 18); icon.frame = NSRect(x: bounds.width - 33, y: 5, width: 25, height: 25) }
+  override func layout() { super.layout(); field.frame = NSRect(x: 10, y: (bounds.height - ExplorerTypography.lineHeight) / 2, width: max(0, bounds.width - 43), height: ExplorerTypography.lineHeight); icon.frame = NSRect(x: bounds.width - 33, y: 5, width: 25, height: 25) }
   override func draw(_ dirtyRect: NSRect) {
     let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 4, yRadius: 4)
     ExplorerPalette.input.setFill(); path.fill(); ExplorerPalette.border.setStroke(); path.lineWidth = 1; path.stroke()

@@ -8,6 +8,7 @@ final class ExplorerSpecialView: SurfaceView, NetServiceBrowserDelegate, NetServ
   // Retained for source compatibility; connections are handled by the Native service.
   var onConnect: ((String) -> Void)?
   var onVolumesChanged: (() -> Void)?
+  var onConnected: ((String) -> Void)?
   private var connectionTask: Task<Void, Never>?
   private var ejecting = Set<String>()
   private let defaults: UserDefaults
@@ -259,7 +260,7 @@ final class ExplorerSpecialView: SurfaceView, NetServiceBrowserDelegate, NetServ
       do {
         let directory = try await NativeNetwork.shared.connection(input)
         guard let self, self.revision == token else { return }; self.connectionTask = nil; self.setConnecting(false)
-        if let directory { self.networkStatus.stringValue = ""; self.onVolumesChanged?(); self.onNavigate?(directory) }
+        if let directory { self.networkStatus.stringValue = ""; self.onConnected?(input); self.onVolumesChanged?(); self.onNavigate?(directory) }
         else { self.networkStatus.stringValue = NL("已取消") }
       } catch {
         guard let self, self.revision == token else { return }; self.connectionTask = nil; self.setConnecting(false); self.networkStatus.stringValue = NL(error.localizedDescription)

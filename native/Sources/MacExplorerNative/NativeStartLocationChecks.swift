@@ -41,7 +41,7 @@ enum NativeStartLocationChecks {
     try check(control.title == NL("个人文件夹"), "General settings retain the existing personal-folder default")
     control.performClick(nil)
     let options = children(first).compactMap(\.contentView).flatMap(descendants).filter { $0.accessibilityRole() == .menuItem }.compactMap { $0.accessibilityLabel() }
-    try check(options == [NL("此电脑"), NL("个人文件夹")], "Startup picker exposes exactly This PC and Personal folder")
+    try check(options == [NL("此电脑"), NL("个人文件夹"), NL("自选文件夹…")], "Startup picker exposes This PC, Personal folder and Choose Folder")
     try choose(NL("此电脑"), owner: first)
     try check(defaults.string(forKey: NativeStartLocation.preferenceKey) == "computer" && control.title == NL("此电脑"), "Choosing This PC saves the stable setting value")
     try check(a.directory == root && b.directory == root && a.tabs.count == 1 && b.tabs.count == 1, "Changing the default leaves both existing windows and tabs in place")

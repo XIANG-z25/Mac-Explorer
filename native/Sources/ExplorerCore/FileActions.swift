@@ -40,6 +40,68 @@ public struct FileActionResult: Sendable {
   }
 }
 
+public enum BatchRenameCase: String, Sendable {
+  case preserve, lowercase, uppercase, capitalized
+}
+
+public enum BatchRenameCollisionPolicy: Sendable {
+  case fail, keepBoth
+}
+
+public struct BatchRenameConflict: Sendable {
+  public let source: URL
+  public let destination: URL
+  public let sourceSize: Int64?
+  public let destinationSize: Int64?
+
+  public init(source: URL, destination: URL, sourceSize: Int64?, destinationSize: Int64?) {
+    self.source = source
+    self.destination = destination
+    self.sourceSize = sourceSize
+    self.destinationSize = destinationSize
+  }
+}
+
+public struct BatchRenameSequence: Sendable {
+  public var start: Int
+  public var padding: Int
+  public var separator: String
+
+  public init(start: Int = 1, padding: Int = 2, separator: String = " ") {
+    self.start = start
+    self.padding = padding
+    self.separator = separator
+  }
+}
+
+/// Rules are deliberately name-only: the same operation safely applies to files
+/// and folders. An extension override is ignored for folders.
+public struct BatchRenameOptions: Sendable {
+  public var prefix: String
+  public var suffix: String
+  public var find: String
+  public var replacement: String
+  public var casing: BatchRenameCase
+  /// Literal fragments removed by editing a reference source name.
+  public var removeTexts: [String]
+  public var removeBracketedContent: Bool
+  public var sequence: BatchRenameSequence?
+  /// `nil` preserves a file extension; an empty value removes it.
+  public var extensionOverride: String?
+
+  public init(prefix: String = "", suffix: String = "", find: String = "", replacement: String = "", casing: BatchRenameCase = .preserve, removeTexts: [String] = [], removeBracketedContent: Bool = false, sequence: BatchRenameSequence? = nil, extensionOverride: String? = nil) {
+    self.prefix = prefix
+    self.suffix = suffix
+    self.find = find
+    self.replacement = replacement
+    self.casing = casing
+    self.removeTexts = removeTexts
+    self.removeBracketedContent = removeBracketedContent
+    self.sequence = sequence
+    self.extensionOverride = extensionOverride
+  }
+}
+
 public enum FileActions {
   public static func create(in parent: URL, name: String, directory: Bool, template: URL? = nil) throws -> FileActionChange {
     try validateName(name)
@@ -109,6 +171,200 @@ public enum FileActions {
       try moveExclusively(source, to: destination)
     }
     return FileActionChange(source: source, destination: destination, kind: .move)
+  }
+
+  /// Apply reusable Finder-style rules to files and folders in one directory.
+  /// All targets are preflighted before the first move so accidental collisions
+  /// do not turn a multi-item edit into a partial rename.
+  /// Existing non-selected targets produced by these rules. This checks only
+  /// proposed names, so it remains quick on a large SMB directory.
+  public static func batchRenameConflicts(_ sources: [URL], options: BatchRenameOptions) throws -> [BatchRenameConflict] {
+    guard sources.count >= 2 else { return [] }
+    let parent = sources[0].deletingLastPathComponent()
+    guard sources.allSatisfy({ $0.deletingLastPathComponent().standardizedFileURL == parent.standardizedFileURL }) else {
+      throw failure(NL("批量重命名只能处理同一文件夹中的项目。"))
+    }
+    let selectedNames = Set(sources.map { normalizedName($0.lastPathComponent) })
+    var proposed = Set<String>()
+    var conflicts: [BatchRenameConflict] = []
+    for (index, source) in sources.enumerated() {
+      let source = try existingURL(source)
+      let sourceInfo = try requiredInfo(source)
+      let name = try batchRenameName(source, index: index, options: options)
+      let key = normalizedName(name), sourceKey = normalizedName(source.lastPathComponent)
+      let destination = parent.appendingPathComponent(name)
+      let duplicatesProposedTarget = !proposed.insert(key).inserted
+      let destinationInfo: stat?
+      if key == sourceKey { destinationInfo = nil }
+      else { destinationInfo = try entryInfo(destination) }
+      let targetsExistingItem = destinationInfo != nil
+      if key != sourceKey && (selectedNames.contains(key) || duplicatesProposedTarget || targetsExistingItem) {
+        let sourceSize = sourceInfo.st_mode & S_IFMT == S_IFREG ? Int64(sourceInfo.st_size) : nil
+        let destinationSize = destinationInfo.map { $0.st_mode & S_IFMT == S_IFREG ? Int64($0.st_size) : nil } ?? nil
+        conflicts.append(BatchRenameConflict(source: source, destination: destination, sourceSize: sourceSize, destinationSize: destinationSize))
+      }
+    }
+    return conflicts
+  }
+
+  public static func batchRename(_ sources: [URL], options: BatchRenameOptions, collisionPolicy: BatchRenameCollisionPolicy = .fail) -> FileActionResult {
+    guard sources.count >= 2 else { return FileActionResult(succeeded: [], errors: [NL("请选择至少两个项目。")], changes: []) }
+    do {
+      let parent = sources[0].deletingLastPathComponent()
+      guard sources.allSatisfy({ $0.deletingLastPathComponent().standardizedFileURL == parent.standardizedFileURL }) else {
+        throw failure(NL("批量重命名只能处理同一文件夹中的项目。"))
+      }
+      if let extensionOverride = options.extensionOverride { _ = try normalizedExtension(extensionOverride) }
+      // Do not enumerate the entire directory here. On an SMB/NAS share a large
+      // media folder can make that one metadata request take longer than the
+      // rename itself. Check only the handful of targets we are about to use.
+      let selectedNames = Set(sources.map { normalizedName($0.lastPathComponent) })
+      var proposed = Set<String>()
+      var plan: [(URL, String, String)] = []
+      guard Set(sources.map { $0.standardizedFileURL }).count == sources.count else { throw failure(NL("请选择不同的项目。")) }
+      for (index, source) in sources.enumerated() {
+        let source = try existingURL(source)
+        try validateModificationSource(source)
+        let isDirectory = (try source.resourceValues(forKeys: [.isDirectoryKey])).isDirectory == true
+        var name = try batchRenameName(source, index: index, options: options)
+        try validateName(name)
+        var key = normalizedName(name)
+        let sourceKey = normalizedName(source.lastPathComponent)
+        var destination = parent.appendingPathComponent(name)
+        var targetsAnotherSelectedItem = key != sourceKey && selectedNames.contains(key)
+        let targetsExistingItem: Bool
+        if key == sourceKey { targetsExistingItem = false }
+        else { targetsExistingItem = try entryInfo(destination) != nil }
+        let duplicatesProposedTarget = proposed.contains(key)
+        if targetsAnotherSelectedItem || targetsExistingItem || duplicatesProposedTarget {
+          switch collisionPolicy {
+          case .fail:
+            throw failure(NL("目标已存在：{0}", destination.path))
+          case .keepBoth:
+            let candidate = name
+            var number = 1
+            while true {
+              name = try batchDuplicateName(candidate, directory: isDirectory, number: number)
+              key = normalizedName(name)
+              destination = parent.appendingPathComponent(name)
+              number += 1
+              targetsAnotherSelectedItem = selectedNames.contains(key)
+              let targetExists = try entryInfo(destination) != nil
+              let unavailable = targetsAnotherSelectedItem || proposed.contains(key) || targetExists
+              if !unavailable { break }
+            }
+            guard proposed.insert(key).inserted else { throw failure(NL("目标已存在：{0}", destination.path)) }
+          }
+        } else {
+          _ = proposed.insert(key)
+        }
+        plan.append((source, name, try identity(source)))
+      }
+      var changes: [FileActionChange] = []
+      var succeeded: [URL] = []
+      for (source, name, identity) in plan {
+        if source.lastPathComponent == name { succeeded.append(source); continue }
+        do { let change = try rename(source, to: name, expectedIdentity: identity); changes.append(change); succeeded.append(change.destination) }
+        catch { return FileActionResult(succeeded: succeeded, errors: [error.localizedDescription], changes: changes) }
+      }
+      return FileActionResult(succeeded: succeeded, errors: [], changes: changes)
+    } catch { return FileActionResult(succeeded: [], errors: [error.localizedDescription], changes: []) }
+  }
+
+  /// Preview uses the same transform as execution and deliberately does not
+  /// touch the filesystem or reserve names.
+  public static func batchRenamePreview(_ sources: [URL], options: BatchRenameOptions) throws -> [String] {
+    if let extensionOverride = options.extensionOverride { _ = try normalizedExtension(extensionOverride) }
+    return try sources.enumerated().map { index, source in
+      let name = try batchRenameName(source, index: index, options: options)
+      try validateName(name)
+      return name
+    }
+  }
+
+  /// Return literal chunks removed while changing a reference source name.
+  /// `nil` means the edit also inserted or rearranged text, which is not safe
+  /// to apply as a deletion rule to other selected entries.
+  public static func batchRenameRemovedText(original: String, edited: String) -> [String]? {
+    var originalIndex = original.startIndex
+    var editedIndex = edited.startIndex
+    var removed = ""
+    var chunks: [String] = []
+    while originalIndex < original.endIndex {
+      let character = original[originalIndex]
+      if editedIndex < edited.endIndex, character == edited[editedIndex] {
+        if !removed.isEmpty { chunks.append(removed); removed = "" }
+        edited.formIndex(after: &editedIndex)
+      } else {
+        removed.append(character)
+      }
+      original.formIndex(after: &originalIndex)
+    }
+    guard editedIndex == edited.endIndex else { return nil }
+    if !removed.isEmpty { chunks.append(removed) }
+    return chunks
+  }
+
+  private static func batchRenameName(_ source: URL, index: Int, options: BatchRenameOptions) throws -> String {
+    let directory = (try source.resourceValues(forKeys: [.isDirectoryKey])).isDirectory == true
+    let originalExtension = directory ? "" : source.pathExtension
+    var stem = directory || originalExtension.isEmpty ? source.lastPathComponent : source.deletingPathExtension().lastPathComponent
+    for text in options.removeTexts where !text.isEmpty { stem = stem.replacingOccurrences(of: text, with: "") }
+    if !options.find.isEmpty { stem = stem.replacingOccurrences(of: options.find, with: options.replacement) }
+    if options.removeBracketedContent { stem = removeBracketedContent(from: stem) }
+    switch options.casing {
+    case .preserve: break
+    case .lowercase: stem = stem.localizedLowercase
+    case .uppercase: stem = stem.localizedUppercase
+    case .capitalized: stem = stem.localizedCapitalized
+    }
+    stem = options.prefix + stem + options.suffix
+    if let sequence = options.sequence {
+      guard sequence.start >= 0, (0...12).contains(sequence.padding) else { throw failure(NL("编号起始值或位数无效。")) }
+      let (number, overflow) = sequence.start.addingReportingOverflow(index)
+      guard !overflow, number >= 0 else { throw failure(NL("编号起始值或位数无效。")) }
+      let text = sequence.padding == 0 ? String(number) : String(format: "%0*ld", sequence.padding, number)
+      stem += sequence.separator + text
+    }
+    let ext: String
+    if directory { ext = "" }
+    else if let override = options.extensionOverride { ext = try normalizedExtension(override) }
+    else { ext = originalExtension }
+    return stem + (ext.isEmpty ? "" : ".\(ext)")
+  }
+
+  private static func batchDuplicateName(_ name: String, directory: Bool, number: Int) throws -> String {
+    let ext = directory || URL(fileURLWithPath: name).pathExtension.isEmpty ? "" : ".\(URL(fileURLWithPath: name).pathExtension)"
+    let stem = ext.isEmpty ? name : URL(fileURLWithPath: name).deletingPathExtension().lastPathComponent
+    let suffix = " (\(number))"
+    let maximumStemBytes = 255 - suffix.utf8.count - ext.utf8.count
+    guard maximumStemBytes > 0 else { throw failure(NL("名称过长，无法添加编号。")) }
+    var shortened = stem
+    while shortened.utf8.count > maximumStemBytes { shortened.removeLast() }
+    let result = shortened + suffix + ext
+    try validateName(result)
+    return result
+  }
+
+  private static func normalizedName(_ name: String) -> String {
+    name.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+  }
+
+  private static func normalizedExtension(_ value: String) throws -> String {
+    let ext = value.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "."))
+    guard !ext.contains("/"), !ext.contains(":"), !ext.contains("\0") else { throw failure(NL("扩展名无效。")) }
+    return ext
+  }
+
+  private static func removeBracketedContent(from value: String) -> String {
+    let expression = "\\([^)]*\\)|\\[[^]]*\\]|\\{[^}]*\\}|（[^）]*）|【[^】]*】"
+    guard let regex = try? NSRegularExpression(pattern: expression) else { return value }
+    var result = value
+    while let match = regex.firstMatch(in: result, range: NSRange(result.startIndex..., in: result)) {
+      guard let range = Range(match.range, in: result) else { break }
+      result.removeSubrange(range)
+    }
+    return result.trimmingCharacters(in: .whitespacesAndNewlines)
   }
 
   public static func transfer(_ sources: [URL], to directory: URL, move: Bool, control: FileTransferControl? = nil) -> FileActionResult {

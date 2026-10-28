@@ -29,6 +29,9 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
   private var vcsGeneration = 0
   private var vcsReads = 0
   private var vcsTimer: Timer?
+  private var groupingTimer: Timer?
+  private var reconnectTask: Task<Void, Never>?
+  private var groupingDay = Calendar.current.startOfDay(for: Date())
   private var focusObserver: NSObjectProtocol?
   var onLanguageChange: ((String) -> Void)?
   var onDetachTab: ((BrowserTab, NSPoint) -> Bool)?
@@ -45,6 +48,15 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
   private var writable: Bool { directory.isFileURL && !searchActive && !viewingTrash }
   var selectedPaths: Set<String> { get { tabs[activeTab].selectedPaths } set { tabs[activeTab].selectedPaths = newValue } }
   var showHidden = false, ascending = true, compact = false, checkboxes = false, extensions = true, navigationPane = true
+  var groupMode: EntryGroupMode = .none
+  var groupNewestFirst = true, groupFoldersFirst = true
+  private(set) var groups: [EntryGroup] = []
+  private(set) var displayRows: [ExplorerDisplayRow] = []
+  private var collapsedGroups = Set<String>()
+  private var groupingSource: [FileEntry]?
+  private var groupingSignature = ""
+  private var groupingIndexes: [String: Int] = [:]
+  private var displayedCollapsedGroups = Set<String>()
   var sort: EntrySort = .name
   var mode: ExplorerLayoutMode = .icons
   var iconSize: CGFloat = 64
@@ -98,6 +110,8 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
   private var preferencesObserver: NSObjectProtocol?
   private var preferencesWork: DispatchWorkItem?
   private var preferenceSnapshot: NSDictionary = [:]
+  private var appliedFontSize: CGFloat = 13
+  private var preferredRowHeight: CGFloat { max(compact ? 28 : 36, appliedFontSize + (compact ? 15 : 19)) }
   private(set) var inputNavigation: NativeInputNavigation?
   private static let placesChanged = Notification.Name("NativeExplorerPlacesChanged")
   private var stopped = false
@@ -147,9 +161,10 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
     self.defaults = defaults; places = QuickAccessState(defaults: defaults); tabs = [BrowserTab(history: [initial])]
     home = ProcessInfo.processInfo.environment["EXPLORER_NATIVE_HOME"].map { URL(fileURLWithPath: $0) } ?? FileManager.default.homeDirectoryForCurrentUser
     super.init(nibName: nil, bundle: nil)
+    appliedFontSize = ExplorerTypography.baseSize
     shortcutOverrides = defaults.dictionary(forKey: "shortcuts") as? [String: String] ?? [:]
     if let saved = defaults.stringArray(forKey: "toolbar") {
-      let allowed = Set(["cut", "copy", "paste", "rename", "share", "trash", "airdrop", "terminal", "undo", "refresh"])
+      let allowed = Set(["cut", "copy", "paste", "rename", "batchRename", "share", "trash", "airdrop", "terminal", "undo", "refresh"])
       var seen = Set<String>(); toolbarOrder = saved.filter { allowed.contains($0) && seen.insert($0).inserted }
     }
     showHidden = defaults.bool(forKey: "showHidden")
@@ -174,7 +189,7 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
     sidebar.color = ExplorerPalette.sidebar; sidebarDocument.color = ExplorerPalette.sidebar
     pane.color = ExplorerPalette.sidebar; footer.color = ExplorerPalette.sidebar
     sidebar.rightBorder = true; pane.leftBorder = true; footer.topBorder = true
-    status.font = .systemFont(ofSize: 11, weight: .regular)
+    status.font = ExplorerTypography.font(ofSize: 12)
     for scroll in [tabsScroll, sidebarScroll, tableScroll, collectionScroll] { scroll.automaticallyAdjustsContentInsets = false }
     tabsScroll.drawsBackground = false; tabsScroll.hasHorizontalScroller = false; tabsScroll.documentView = tabsDocument
     tabsBar.addSubview(tabsScroll); tabsBar.addSubview(addTabButton)
@@ -194,6 +209,7 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
     content.addSubview(specialView); specialView.isHidden = true
     specialView.onNavigate = { [weak self] in self?.navigate(to: $0) }
     specialView.onVolumesChanged = { [weak self] in self?.rebuildSidebar() }
+    specialView.onConnected = { [weak self] address in self?.rememberServer(address) }
     sidebarScroll.drawsBackground = false; sidebarScroll.hasVerticalScroller = true; sidebarScroll.autohidesScrollers = true; sidebarScroll.documentView = sidebarDocument; sidebar.addSubview(sidebarScroll)
     errorBar.color = ExplorerPalette.errorSurface; errorBar.addSubview(errorLabel); errorBar.addSubview(errorClose); errorBar.addSubview(exitSearch); errorBar.addSubview(privacySettings)
     errorClose.onPress = { [weak self] in self?.lastError = nil; self?.operationError = nil; self?.needsFullDiskAccess = false; self?.render() }
@@ -220,6 +236,11 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
     vcsTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
       guard let self, self.vcsStatus != nil, self.view.window?.isKeyWindow == true, !self.automaticRefreshBlocked else { return }; self.refreshVCS()
     }
+    groupingTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+      guard let self, !self.stopped, self.groupMode == .modified || self.groupMode == .created else { return }
+      if Calendar.current.startOfDay(for: Date()) != self.groupingDay && !self.automaticRefreshBlocked { self.render() }
+    }
+    groupingTimer?.tolerance = 10
     focusObserver = NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification, object: nil, queue: .main) { [weak self] note in
       guard let self, note.object as? NSWindow === self.view.window else { return }
       self.refreshVisibleIcons()
@@ -238,7 +259,7 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
   }
   private func preferences() -> NSDictionary {
     var result: [String: Any] = [:]
-    for key in ["theme", "toolbar", "shortcuts", "showHidden", "compact", "checkboxes", "extensions", "navigationPane", "folderViews", "defaultFolderView", "versionControl", "typedPaths", "paneMode"] { if let value = defaults.object(forKey: key) { result[key] = value } }
+    for key in ["theme", "toolbar", "shortcuts", "showHidden", "compact", "checkboxes", "extensions", "navigationPane", "folderViews", "defaultFolderView", "versionControl", "typedPaths", "paneMode", ExplorerTypography.preferenceKey] { if let value = defaults.object(forKey: key) { result[key] = value } }
     return result as NSDictionary
   }
   private func schedulePreferences() {
@@ -249,6 +270,7 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
       let current = self.preferences(); guard current != self.preferenceSnapshot else { return }
       let folderChanged = !NSDictionary(dictionary: self.preferenceSnapshot["folderViews"] as? [String: Any] ?? [:]).isEqual(to: current["folderViews"] as? [String: Any] ?? [:]) || !NSDictionary(dictionary: self.preferenceSnapshot["defaultFolderView"] as? [String: Any] ?? [:]).isEqual(to: current["defaultFolderView"] as? [String: Any] ?? [:])
       self.preferenceSnapshot = current
+      self.refreshTypography()
       self.shortcutOverrides = self.defaults.dictionary(forKey: "shortcuts") as? [String: String] ?? [:]
       if let saved = self.defaults.stringArray(forKey: "toolbar") { var seen = Set<String>(); self.toolbarOrder = saved.filter { self.commands[$0] != nil && seen.insert($0).inserted } }
       self.showHidden = self.defaults.bool(forKey: "showHidden"); self.compact = self.defaults.bool(forKey: "compact"); self.checkboxes = self.defaults.bool(forKey: "checkboxes")
@@ -256,10 +278,24 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
       self.paneMode = self.defaults.string(forKey: "paneMode").flatMap { ["details", "preview"].contains($0) ? $0 : nil } ?? ""
       self.addressBar.showHidden = self.showHidden; self.addressBar.recentPaths = self.defaults.stringArray(forKey: "typedPaths") ?? []
       if folderChanged { self.restoreView(self.directory) }
-      self.collectionLayout.mode = self.mode; self.collectionLayout.iconSize = self.iconSize; self.collectionLayout.compact = self.compact; self.collectionLayout.invalidateLayout(); self.table.rowHeight = self.compact ? 28 : 36
+      self.collectionLayout.mode = self.mode; self.collectionLayout.iconSize = self.iconSize; self.collectionLayout.compact = self.compact; self.collectionLayout.invalidateLayout(); self.table.rowHeight = self.preferredRowHeight
+      self.versionControl?.setEnabled(self.defaults.object(forKey: "versionControl") as? Bool ?? true)
       self.syncMenuShortcuts(); self.rebuildSidebar(); self.view.needsLayout = true; self.recompute(); self.render(); self.refreshVCS(force: true)
     }
     preferencesWork = work; DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
+  }
+
+  private func refreshTypography() {
+    let stored = defaults.integer(forKey: ExplorerTypography.preferenceKey)
+    let next = CGFloat(ExplorerTypography.validSize(stored))
+    guard next != appliedFontSize else { return }
+    let delta = next - appliedFontSize
+    appliedFontSize = next; ExplorerTypography.baseSize = next
+    ExplorerTypography.resizeControls(in: view, by: delta)
+    if let window = view.window { ExplorerDialogs.refreshTypography(in: window, by: delta) }
+    table.rowHeight = preferredRowHeight
+    table.headerView?.frame.size.height = max(36, ExplorerTypography.lineHeight + 8)
+    collectionLayout.invalidateLayout(); view.needsLayout = true
   }
 
   private func buildCommands() {
@@ -272,6 +308,7 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
       ("copy", "copy", NL("复制 ⌘C"), { [weak self] in self?.copySelection(cut: false) }),
       ("paste", "paste", NL("粘贴 ⌘V"), { [weak self] in self?.pasteFiles() }),
       ("rename", "rename", NL("重命名 F2"), { [weak self] in self?.renameSelected() }),
+      ("batchRename", "rename", NL("批量重命名"), { [weak self] in self?.batchRenameSelected() }),
       ("share", "share", NL("共享"), { [weak self] in self?.shareSelected() }),
       ("trash", "trash", NL("移到回收站 ⌘⌫"), { [weak self] in self?.trashSelected() }),
       ("airdrop", "airdrop", NL("隔空投送"), { [weak self] in self?.sendAirDrop() }),
@@ -281,7 +318,7 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
     ]
     for (key, icon, tip, action) in definitions {
       let control = ExplorerButton(icon: icon, action: action); control.toolTip = tip; commands[key] = control; commandTools.addSubview(control)
-      if ["cut", "copy", "rename"].contains(key) { control.iconColor = ExplorerPalette.commandAccent }
+      if ["cut", "copy", "rename", "batchRename"].contains(key) { control.iconColor = ExplorerPalette.commandAccent }
     }
     firstDivider.color = ExplorerPalette.border; secondDivider.color = ExplorerPalette.border
     sortButton.onPress = { [weak self] in guard let self else { return }; ExplorerMenu.present(self.sortMenu(), below: self.sortButton) }
@@ -290,8 +327,11 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
     previewButton.onPress = { [weak self] in self?.togglePane("preview") }
   }
   private func buildFileViews() {
-    table.style = .plain
-    table.dataSource = self; table.delegate = self; table.rowHeight = compact ? 28 : 36; table.intercellSpacing = .zero
+    table.style = .plain; table.floatsGroupRows = false
+    table.isFileRow = { [weak self] in self?.entryIndex(at: $0) != nil }
+    table.onGroupClick = { [weak self] in self?.toggleGroup(at: $0) }
+    collection.isFileRow = table.isFileRow; collection.onGroupClick = table.onGroupClick
+    table.dataSource = self; table.delegate = self; table.rowHeight = preferredRowHeight; table.intercellSpacing = .zero
     table.allowsMultipleSelection = true; table.backgroundColor = ExplorerPalette.surface
     table.columnAutoresizingStyle = .noColumnAutoresizing; table.target = self; table.doubleAction = #selector(openSelected)
     table.setAccessibilityLabel(NL("文件列表"))
@@ -308,6 +348,7 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
     tableScroll.documentView = table; tableScroll.hasVerticalScroller = true; tableScroll.hasHorizontalScroller = true; tableScroll.autohidesScrollers = true; tableScroll.backgroundColor = ExplorerPalette.surface; content.addSubview(tableScroll)
     collection.collectionViewLayout = collectionLayout; collection.isSelectable = true; collection.allowsMultipleSelection = true
     collection.backgroundColors = [ExplorerPalette.surface]; collection.dataSource = self; collection.delegate = self
+    collection.register(ExplorerGroupItem.self, forItemWithIdentifier: NSUserInterfaceItemIdentifier("group"))
     collection.register(IconItem.self, forItemWithIdentifier: NSUserInterfaceItemIdentifier("file")); collection.setAccessibilityLabel(NL("文件图标"))
     collectionScroll.documentView = collection; collectionScroll.hasVerticalScroller = true; collectionScroll.hasHorizontalScroller = true; collectionScroll.autohidesScrollers = true; content.addSubview(collectionScroll)
     table.registerForDraggedTypes([.fileURL]); collection.registerForDraggedTypes([.fileURL])
@@ -327,8 +368,9 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
     tabsBar.frame = NSRect(x: 0, y: 0, width: width, height: 48)
     navigationBar.frame = NSRect(x: 0, y: 48, width: width, height: 61)
     commandBar.frame = NSRect(x: 0, y: 109, width: width, height: 57)
-    footer.frame = NSRect(x: 0, y: height - 30, width: width, height: 30)
-    let bodyHeight = max(0, height - 196), errorHeight: CGFloat = lastError == nil && !searchActive ? 0 : 35
+    let footerHeight = max(30, ExplorerTypography.lineHeight + 14)
+    footer.frame = NSRect(x: 0, y: height - footerHeight, width: width, height: footerHeight)
+    let bodyHeight = max(0, height - 166 - footerHeight), errorHeight: CGFloat = lastError == nil && !searchActive ? 0 : 35
     sidebar.frame = NSRect(x: 0, y: 166, width: sidebarWidth, height: bodyHeight); sidebar.isHidden = !navigationPane; sidebarScroll.frame = sidebar.bounds
     sidebarDocument.frame.size.width = sidebarWidth; layoutSidebarRows()
     content.frame = NSRect(x: sidebarWidth, y: 166 + errorHeight, width: max(0, width - sidebarWidth - paneWidth), height: bodyHeight - errorHeight)
@@ -352,19 +394,20 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
     addressBar.frame = NSRect(x: x, y: 13, width: max(100, searchBox.frame.minX - navGap - x), height: 35)
     let gap: CGFloat = width <= 900 ? 4 : width <= 1100 ? 6 : 10
     x = width <= 900 ? 12 : 17
-    newButton.frame = NSRect(x: x, y: 11, width: 90, height: 34); x += 90 + gap
+    let newWidth = max(90, newButton.intrinsicContentSize.width), menuWidth = max(90, sortButton.intrinsicContentSize.width, viewButton.intrinsicContentSize.width)
+    newButton.frame = NSRect(x: x, y: 11, width: newWidth, height: 34); x += newWidth + gap
     for (key, button) in commands { button.isHidden = !toolbarOrder.contains(key) }
     firstDivider.isHidden = toolbarOrder.isEmpty; secondDivider.isHidden = toolbarOrder.isEmpty; commandToolsScroll.isHidden = toolbarOrder.isEmpty
     if !toolbarOrder.isEmpty {
       firstDivider.frame = NSRect(x: x, y: 18, width: 1, height: 20); x += 1 + gap
       let fullWidth = CGFloat(toolbarOrder.count * 45 - 10)
-      let groupWidth = min(fullWidth, max(35, width - x - (2 * gap + 1 + 90 + gap + 90 + gap + 35 + gap + (width <= 900 ? 35 : 73) + 17)))
+      let groupWidth = min(fullWidth, max(35, width - x - (2 * gap + 1 + menuWidth + gap + menuWidth + gap + 35 + gap + (width <= 900 ? 35 : 73) + 17)))
       commandToolsScroll.frame = NSRect(x: x, y: 11, width: groupWidth, height: 34); commandTools.frame = NSRect(x: 0, y: 0, width: fullWidth, height: 34)
       for (index, key) in toolbarOrder.enumerated() { commands[key]?.frame = NSRect(x: CGFloat(index) * 45, y: 0, width: 35, height: 34) }
       x += groupWidth + gap; secondDivider.frame = NSRect(x: x, y: 18, width: 1, height: 20); x += 1 + gap
     }
-    sortButton.frame = NSRect(x: x, y: 11, width: 90, height: 34); x += 90 + gap
-    viewButton.frame = NSRect(x: x, y: 11, width: 90, height: 34); x += 90 + gap
+    sortButton.frame = NSRect(x: x, y: 11, width: menuWidth, height: 34); x += menuWidth + gap
+    viewButton.frame = NSRect(x: x, y: 11, width: menuWidth, height: 34); x += menuWidth + gap
     moreButton.frame = NSRect(x: x, y: 11, width: 35, height: 34)
     previewButton.frame = NSRect(x: width - (width <= 900 ? 47 : 90), y: 11, width: width <= 900 ? 35 : 73, height: 34)
     previewButton.title = width <= 900 ? "" : NL("预览")
@@ -398,7 +441,7 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
     emptyIcon.frame = NSRect(x: (content.bounds.width - 68) / 2, y: max(40, content.bounds.height * 0.35 - 60), width: 68, height: 68)
     emptyLabel.frame = NSRect(x: 20, y: emptyIcon.frame.maxY + 18, width: content.bounds.width - 40, height: 24)
     spinner.frame = NSRect(x: (content.bounds.width - 16) / 2, y: emptyIcon.frame.minY, width: 16, height: 16)
-    status.frame = NSRect(x: 22, y: 7, width: max(100, width - 360), height: 17)
+    status.frame = NSRect(x: 22, y: 7, width: max(100, width - 360), height: max(17, ExplorerTypography.lineHeight))
     iconViewButton.frame = NSRect(x: width - 36, y: 1, width: 30, height: 28); detailViewButton.frame = NSRect(x: width - 68, y: 1, width: 30, height: 28)
     sizeValue.frame = NSRect(x: width - 100, y: 7, width: 27, height: 17); sizeSlider.frame = NSRect(x: width - 210, y: 6, width: 100, height: 18); sizeLabel.frame = NSRect(x: width - 267, y: 7, width: 52, height: 17)
     for item in [sizeValue, sizeSlider, sizeLabel] { item.isHidden = mode != .icons }
@@ -484,7 +527,7 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
       item.onDragUpdate = { [weak self, weak item] info, localY in self?.sidebarDrag(info, target: url, row: item, y: localY, pinned: pinned) ?? [] }
       item.onDrop = { [weak self, weak item] info, localY in self?.sidebarDrop(info, target: url, row: item, y: localY, pinned: pinned) ?? false }
       item.onDragExit = { [weak self] in self?.placeMarker.isHidden = true }
-      item.tint = ExplorerPalette.place(icon); item.frame = NSRect(x: 8, y: y, width: max(0, sidebar.bounds.width - 16), height: 36); y += 36
+      item.tint = ExplorerPalette.place(icon); item.frame = NSRect(x: 8, y: y, width: max(0, sidebar.bounds.width - 16), height: max(36, ExplorerTypography.rowHeight)); y += max(36, ExplorerTypography.rowHeight)
       item.toolTip = url.path; sidebarDocument.addSubview(item); sidebarRows.append((url, item))
       if expanded.contains(url.path) {
         if let error = folderErrors[url.path] {
@@ -595,10 +638,10 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
   private func sameLocation(_ left: URL, _ right: URL) -> Bool {
     left.isFileURL && right.isFileURL ? left.standardizedFileURL.path == right.standardizedFileURL.path : left == right
   }
-  private var locationLayout: String { "\(mode.rawValue):\(Int(iconSize)):\(compact)" }
+  private var locationLayout: String { "\(mode.rawValue):\(Int(iconSize)):\(compact):\(groupMode.rawValue):\(appliedFontSize)" }
   private func itemFrame(_ index: Int) -> NSRect? {
-    guard entries.indices.contains(index) else { return nil }
-    return mode == .details ? table.rect(ofRow: index) : collectionLayout.layoutAttributesForItem(at: IndexPath(item: index, section: 0))?.frame
+    guard let row = displayRows.firstIndex(where: { $0.entry == index }) else { return nil }
+    return mode == .details ? table.rect(ofRow: row) : collectionLayout.layoutAttributesForItem(at: IndexPath(item: row, section: 0))?.frame
   }
   private func rememberLocationState() {
     guard isViewLoaded, !loading, !searchActive, pendingLocationState == nil, lastError == nil, snapshot.map({ sameLocation($0.directory, directory) }) == true else { return }
@@ -607,9 +650,9 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
     let first: Int?
     if mode == .details {
       let rows = table.rows(in: table.visibleRect)
-      first = rows.length > 0 && entries.indices.contains(rows.location) ? rows.location : nil
+      first = rows.length > 0 ? (rows.location..<min(displayRows.count, rows.location + rows.length)).compactMap { entryIndex(at: $0) }.first : nil
     } else {
-      first = collectionLayout.layoutAttributesForElements(in: collection.visibleRect).first?.indexPath?.item
+      first = collectionLayout.layoutAttributesForElements(in: collection.visibleRect).compactMap { $0.indexPath.flatMap { entryIndex(at: $0.item) } }.first
     }
     var state = BrowserLocationState(selection: selectedPaths, origin: origin, layout: locationLayout)
     if let first, let frame = itemFrame(first) { state.anchor = entries[first].id; state.anchorOffset = NSPoint(x: frame.minX - origin.x, y: frame.minY - origin.y) }
@@ -776,9 +819,9 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
   }
   func stopObserving() {
     guard !stopped else { return }; stopped = true; generation += 1; queryGeneration += 1
-    directoryWatcher.stop(); automaticRead?.cancel(); refreshWork?.cancel(); refreshWork = nil
+    directoryWatcher.stop(); automaticRead?.cancel(); reconnectTask?.cancel(); reconnectTask = nil; refreshWork?.cancel(); refreshWork = nil
     loadTask?.cancel(); queryTask?.cancel(); searchTask?.cancel()
-    inputNavigation?.close(); inputNavigation = nil; preferencesWork?.cancel(); vcsTimer?.invalidate(); vcsTimer = nil
+    inputNavigation?.close(); inputNavigation = nil; preferencesWork?.cancel(); vcsTimer?.invalidate(); vcsTimer = nil; groupingTimer?.invalidate(); groupingTimer = nil
     if let focusObserver { NotificationCenter.default.removeObserver(focusObserver); self.focusObserver = nil }
     if let preferencesObserver { NotificationCenter.default.removeObserver(preferencesObserver); self.preferencesObserver = nil }
     if let keyMonitor { NSEvent.removeMonitor(keyMonitor); self.keyMonitor = nil }
@@ -810,8 +853,9 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
     tableScroll.isHidden = mode != .details || loading || entries.isEmpty
     collectionScroll.isHidden = mode == .details || loading
     // Hidden views can still receive layout callbacks after a directory or layout change.
+    rebuildGroups()
     table.reloadData(); collection.reloadData()
-    let selected = entries.indices.filter { selectedPaths.contains(entries[$0].id) }
+    let selected = displayRows.indices.filter { row in entryIndex(at: row).map { selectedPaths.contains(entries[$0].id) } ?? false }
     table.selectRowIndexes(IndexSet(selected), byExtendingSelection: false)
     collection.selectionIndexPaths = mode == .details || loading ? [] : Set(selected.map { IndexPath(item: $0, section: 0) })
     syncingSelection = false
@@ -848,6 +892,7 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
     commands["trash"]?.toolTip = networkDeletionHint ? NL("暂不支持删除网络项目。") : deletionTitle + " " + shortcutHint("trash")
     commands["airdrop"]?.isEnabled = !chosen.isEmpty && !busy; commands["terminal"]?.isEnabled = directory.isFileURL && !busy
     commands["undo"]?.isEnabled = !undoChanges.isEmpty && !busy; commands["refresh"]?.isEnabled = !busy
+    commands["batchRename"]?.isEnabled = selectedPaths.count >= 2 && !busy && !viewingTrash
     if let vcsStatus, vcsStatus.error == nil { status.stringValue += "     \(vcsStatus.kind == .git ? "Git" : "SVN") · \(vcsStatus.branch)" }
     if !directory.isFileURL { status.stringValue = locationLabel(directory) }
     newButton.isEnabled = !busy && writable; detailViewButton.active = mode == .details; iconViewButton.active = mode == .icons; previewButton.active = paneMode == "preview"
@@ -863,7 +908,7 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
     collectionLayout.mode = mode; collectionLayout.iconSize = iconSize; collectionLayout.compact = compact
   }
   func updateMode(persist: Bool = true) {
-    configureCollectionLayout(); table.rowHeight = compact ? 28 : 36
+    configureCollectionLayout(); table.rowHeight = preferredRowHeight
     collectionLayout.invalidateLayout(); sizeSlider.doubleValue = Double(iconSize); sizeValue.stringValue = "\(Int(iconSize))"
     if persist { saveView() }; render(); view.window?.makeFirstResponder(mode == .details ? table : collection)
   }
@@ -875,7 +920,9 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
     savedFolderViews = defaults.dictionary(forKey: "folderViews") as? [String: [String: Any]] ?? [:]
     let global = defaults.dictionary(forKey: "defaultFolderView") ?? [:]
     var current = savedFolderViews[key] ?? [:]
-    if group == "columns" {
+    if group == "grouping" {
+      current["groupBy"] = groupMode.rawValue; current["groupNewestFirst"] = groupNewestFirst; current["groupFoldersFirst"] = groupFoldersFirst; current["collapsedGroups"] = Array(collapsedGroups).sorted()
+    } else if group == "columns" {
       if detailColumns == (DetailColumns(propertyList: global["columns"]) ?? DetailColumns()) { current.removeValue(forKey: "columns") }
       else { current["columns"] = detailColumns.propertyList }
     } else if group == "sort" {
@@ -885,7 +932,7 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
       if mode.rawValue == (global["view"] as? String ?? "icons") && Int(iconSize) == (global["iconSize"] as? Int ?? 64) { current.removeValue(forKey: "view"); current.removeValue(forKey: "iconSize") }
       else { current["view"] = mode.rawValue; current["iconSize"] = Int(iconSize) }
     }
-    if current["view"] == nil && current["sort"] == nil && current["columns"] == nil { savedFolderViews.removeValue(forKey: key) }
+    if current["view"] == nil && current["sort"] == nil && current["groupBy"] == nil && current["columns"] == nil { savedFolderViews.removeValue(forKey: key) }
     else { current["lastUsed"] = Date().timeIntervalSince1970; savedFolderViews[key] = current }
     if savedFolderViews.count > 5000 {
       let oldest = savedFolderViews.filter { $0.key != key }.sorted {
@@ -914,38 +961,105 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
     sort = EntrySort(rawValue: global["sort"] as? String ?? "name") ?? .name; ascending = global["ascending"] as? Bool ?? true
     if let view = saved["view"] as? String, let layout = ExplorerLayoutMode(rawValue: view), let size = saved["iconSize"] as? Int, (32...128).contains(size) { mode = layout; iconSize = CGFloat(size) }
     if let order = saved["sort"] as? String, let key = EntrySort(rawValue: order), let direction = saved["ascending"] as? Bool { sort = key; ascending = direction }
+    groupMode = EntryGroupMode(rawValue: saved["groupBy"] as? String ?? global["groupBy"] as? String ?? "none") ?? .none
+    groupNewestFirst = saved["groupNewestFirst"] as? Bool ?? global["groupNewestFirst"] as? Bool ?? true
+    groupFoldersFirst = saved["groupFoldersFirst"] as? Bool ?? global["groupFoldersFirst"] as? Bool ?? true
+    collapsedGroups = Set(saved["collapsedGroups"] as? [String] ?? [])
     detailColumns = DetailColumns(propertyList: saved["columns"]) ?? DetailColumns(propertyList: global["columns"]) ?? DetailColumns()
     configureCollectionLayout()
   }
-  func selectedEntries() -> [FileEntry] { entries.filter { selectedPaths.contains($0.id) } }
+  func selectedEntries() -> [FileEntry] { displayRows.compactMap { $0.entry }.map { entries[$0] }.filter { selectedPaths.contains($0.id) } }
   private func displayName(_ entry: FileEntry) -> String { if entry.isPackage { return entry.url.deletingPathExtension().lastPathComponent }; return extensions || entry.isDirectory || entry.url.pathExtension.isEmpty ? entry.name : entry.url.deletingPathExtension().lastPathComponent }
 
-  func numberOfRows(in tableView: NSTableView) -> Int { entries.count }
+  func entryIndex(at row: Int) -> Int? { displayRows.indices.contains(row) ? displayRows[row].entry : nil }
+  func groupIndex(at row: Int) -> Int? { displayRows.indices.contains(row) ? displayRows[row].group : nil }
+  private func groupTitle(_ index: Int) -> String { "\(groups[index].title) (\(groups[index].entries.count))" }
+  private func rebuildGroups() {
+    groupingDay = Calendar.current.startOfDay(for: Date())
+    let signature = "\(groupMode.rawValue)|\(groupNewestFirst)|\(groupFoldersFirst)|\(groupingDay.timeIntervalSince1970)"
+    let changed = groupingSource != entries || groupingSignature != signature
+    guard changed || displayedCollapsedGroups != collapsedGroups else { return }
+    if changed {
+      groupingSource = entries; groupingSignature = signature
+      groups = EntryGrouping.apply(entries, mode: groupMode, newestFirst: groupNewestFirst, foldersFirst: groupFoldersFirst)
+      groupingIndexes = groupMode == .none ? [:] : Dictionary(uniqueKeysWithValues: entries.enumerated().map { ($0.element.id, $0.offset) })
+    }
+    displayedCollapsedGroups = collapsedGroups
+    displayRows.removeAll(keepingCapacity: true)
+    if groupMode == .none { displayRows = entries.indices.map { ExplorerDisplayRow(entry: $0) } }
+    else {
+      for (index, group) in groups.enumerated() {
+        displayRows.append(ExplorerDisplayRow(group: index))
+        if !collapsedGroups.contains(group.id) {
+          displayRows.append(contentsOf: group.entries.compactMap { groupingIndexes[$0.id].map { ExplorerDisplayRow(entry: $0) } })
+        }
+      }
+    }
+    collectionLayout.groupHeaderRows = Set(displayRows.indices.filter { displayRows[$0].group != nil })
+    collectionLayout.invalidateLayout()
+  }
+  func setGrouping(_ mode: EntryGroupMode) {
+    guard groupMode != mode else { return }
+    cancelInlineRename(); groupMode = mode; groupNewestFirst = mode != .kind; collapsedGroups = []; saveView(group: "grouping"); render()
+  }
+  func toggleGroup(at row: Int) {
+    guard let index = groupIndex(at: row), renamingEntry == nil else { return }
+    let id = groups[index].id
+    if collapsedGroups.contains(id) { collapsedGroups.remove(id) }
+    else { collapsedGroups.insert(id); selectedPaths.subtract(groups[index].entries.map(\.id)) }
+    saveView(group: "grouping"); render()
+  }
+  func groupingMenu() -> [ExplorerMenuItem] {
+    var items = [(NL("无"), EntryGroupMode.none), (NL("修改日期"), .modified), (NL("创建日期"), .created), (NL("类型"), .kind)].map { title, value in
+      ExplorerMenuItem(title: title, checked: groupMode == value, radio: true, action: { [weak self] in self?.setGrouping(value) })
+    }
+    items += [ExplorerMenuItem(title: NL("递增"), checked: !groupNewestFirst, enabled: groupMode != .none, divider: true, action: { [weak self] in self?.setGroupOrder(false) }),
+      ExplorerMenuItem(title: NL("递减"), checked: groupNewestFirst, enabled: groupMode != .none, action: { [weak self] in self?.setGroupOrder(true) }),
+      ExplorerMenuItem(title: NL("文件夹始终置顶"), checked: groupFoldersFirst, enabled: groupMode != .none, divider: true, action: { [weak self] in guard let self else { return }; self.groupFoldersFirst.toggle(); self.saveView(group: "grouping"); self.render() }),
+      ExplorerMenuItem(title: NL("展开所有组"), enabled: !collapsedGroups.isEmpty, divider: true, action: { [weak self] in guard let self else { return }; self.collapsedGroups = []; self.saveView(group: "grouping"); self.render() }),
+      ExplorerMenuItem(title: NL("折叠所有组"), enabled: !groups.isEmpty, action: { [weak self] in guard let self else { return }; self.collapsedGroups = Set(self.groups.map(\.id)); self.selectedPaths = []; self.saveView(group: "grouping"); self.render() })]
+    return items
+  }
+  private func setGroupOrder(_ newest: Bool) { groupNewestFirst = newest; saveView(group: "grouping"); render() }
+
+  func numberOfRows(in tableView: NSTableView) -> Int { displayRows.count }
+  func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool { entryIndex(at: row) != nil }
+  func tableView(_ tableView: NSTableView, isGroupRow row: Int) -> Bool { groupIndex(at: row) != nil }
+  func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat { groupIndex(at: row) != nil ? max(38, appliedFontSize + 25) : preferredRowHeight }
   func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? { FileRowView() }
   func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-    guard entries.indices.contains(row), let id = tableColumn?.identifier else { return nil }; let entry = entries[row]
+    if let group = groupIndex(at: row) {
+      let cell = (table.makeView(withIdentifier: .init("group"), owner: self) as? ExplorerGroupCell) ?? ExplorerGroupCell()
+      cell.identifier = .init("group"); cell.title = groupTitle(group); cell.collapsed = collapsedGroups.contains(groups[group].id); cell.onToggle = { [weak self] in self?.toggleGroup(at: row) }; return cell
+    }
+    guard let index = entryIndex(at: row), let id = tableColumn?.identifier else { return nil }; let entry = entries[index]
     if id.rawValue == "name" {
       let cell = (table.makeView(withIdentifier: id, owner: self) as? NameCell) ?? NameCell(); cell.identifier = id; cell.configure(entry, name: displayName(entry)); cell.checkboxes = checkboxes
       cell.checkbox.state = selectedPaths.contains(entry.id) ? .on : .off; cell.checkbox.changed = { [weak self] in self?.toggleSelection(entry.id, selected: $0) }
       cell.alphaValue = isCut && clipboard.contains(entry.url) ? 0.44 : entry.isHidden ? 0.6 : 1; return cell
     }
-    let cell = (table.makeView(withIdentifier: id, owner: self) as? MetadataCell) ?? MetadataCell(); cell.identifier = id
+    let cell = (table.makeView(withIdentifier: id, owner: self) as? MetadataCell) ?? MetadataCell(); cell.identifier = id; cell.value.font = ExplorerTypography.font()
     cell.value.alignment = .left
     switch id.rawValue { case "modified": cell.value.stringValue = entry.modified.map(dateFormatter.string) ?? ""; case "created": cell.value.stringValue = entry.created.map(dateFormatter.string) ?? ""; case "size": cell.value.stringValue = entry.isDirectory ? "" : ExplorerFormat.size(entry.size); cell.value.alignment = .right; default: cell.value.stringValue = entry.kind }; return cell
   }
-  func tableViewSelectionDidChange(_ notification: Notification) { guard !syncingSelection, mode == .details else { return }; selectedPaths = Set(table.selectedRowIndexes.compactMap { entries.indices.contains($0) ? entries[$0].id : nil }); updateStatus(); updatePane() }
+  func tableViewSelectionDidChange(_ notification: Notification) { guard !syncingSelection, mode == .details else { return }; selectedPaths = Set(table.selectedRowIndexes.compactMap { entryIndex(at: $0).map { entries[$0].id } }); updateStatus(); updatePane() }
   func tableView(_ tableView: NSTableView, sortDescriptorsDidChange oldDescriptors: [NSSortDescriptor]) { guard !syncingSortDescriptors, let descriptor = tableView.sortDescriptors.first, let key = descriptor.key, let order = EntrySort(rawValue: key) else { return }; sort = order; ascending = descriptor.ascending; saveView(group: "sort"); recompute() }
-  func collectionView(_ collectionView: NSCollectionView, numberOfItemsInSection section: Int) -> Int { mode == .details || loading ? 0 : entries.count }
+  func collectionView(_ collectionView: NSCollectionView, numberOfItemsInSection section: Int) -> Int { mode == .details || loading ? 0 : displayRows.count }
   func collectionView(_ collectionView: NSCollectionView, itemForRepresentedObjectAt indexPath: IndexPath) -> NSCollectionViewItem {
+    if let group = groupIndex(at: indexPath.item) {
+      let item = collection.makeItem(withIdentifier: .init("group"), for: indexPath) as! ExplorerGroupItem
+      item.configure(title: groupTitle(group), collapsed: collapsedGroups.contains(groups[group].id)); (item.view as? ExplorerGroupCell)?.onToggle = { [weak self] in self?.toggleGroup(at: indexPath.item) }; return item
+    }
     let item = collection.makeItem(withIdentifier: NSUserInterfaceItemIdentifier("file"), for: indexPath) as! IconItem
-    guard entries.indices.contains(indexPath.item) else { item.view.isHidden = true; return item }
-    let entry = entries[indexPath.item]; item.view.isHidden = false
+    guard let index = entryIndex(at: indexPath.item) else { item.view.isHidden = true; return item }
+    let entry = entries[index]; item.view.isHidden = false
     item.configure(entry, name: displayName(entry), mode: mode, size: iconSize, checkboxes: checkboxes)
     item.checkbox.changed = { [weak self] in self?.toggleSelection(entry.id, selected: $0) }; return item
   }
+  func collectionView(_ collectionView: NSCollectionView, shouldSelectItemsAt indexPaths: Set<IndexPath>) -> Set<IndexPath> { Set(indexPaths.filter { entryIndex(at: $0.item) != nil }) }
   func collectionView(_ collectionView: NSCollectionView, didSelectItemsAt indexPaths: Set<IndexPath>) { syncCollectionSelection() }
   func collectionView(_ collectionView: NSCollectionView, didDeselectItemsAt indexPaths: Set<IndexPath>) { syncCollectionSelection() }
-  private func syncCollectionSelection() { guard !syncingSelection, mode != .details else { return }; selectedPaths = Set(collection.selectionIndexPaths.compactMap { entries.indices.contains($0.item) ? entries[$0.item].id : nil }); updateStatus(); updatePane() }
+  private func syncCollectionSelection() { guard !syncingSelection, mode != .details else { return }; selectedPaths = Set(collection.selectionIndexPaths.compactMap { entryIndex(at: $0.item).map { entries[$0].id } }); updateStatus(); updatePane() }
   private func toggleSelection(_ path: String, selected: Bool) { if selected { selectedPaths.insert(path) } else { selectedPaths.remove(path) }; render() }
   func controlTextDidChange(_ obj: Notification) { guard (obj.object as? NSTextField) === search else { return }; searchBox.update(); if !directory.isFileURL { specialView.filter(search.stringValue); return }; if search.stringValue.isEmpty { if searchActive { searchActive = false; reload() } else { recompute() } } }
 
@@ -971,7 +1085,7 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
     tabs.append(BrowserTab(history: [url])); activeTab = tabs.count - 1; prepareLocationState(BrowserLocationState()); search.stringValue = ""; searchActive = false; restoreView(directory, touch: true); reload()
     view.layoutSubtreeIfNeeded(); tabsDocument.subviews.last?.scrollToVisible(tabsDocument.subviews.last!.bounds)
   }
-  @objc func newTab() { openTab(at: NativeStartLocation.load(defaults).url(home: home)) }
+  @objc func newTab() { openTab(at: NativeStartLocation.load(defaults).url(home: home, defaults: defaults)) }
   @objc func closeTab() { closeTab(at: activeTab) }
   private func closeTab(at index: Int) {
     guard tabs.indices.contains(index) else { return }
@@ -1014,7 +1128,7 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
   }
 
   @objc func toggleHidden() { showHidden.toggle(); defaults.set(showHidden, forKey: "showHidden"); addressBar.showHidden = showHidden; recompute(); for path in expanded { readFolderChildren(URL(fileURLWithPath: path)) }; rebuildSidebar() }
-  @objc func selectAllFiles() { selectedPaths = Set(entries.map(\.id)); render() }
+  @objc func selectAllFiles() { selectedPaths = Set(displayRows.compactMap { $0.entry }.map { entries[$0].id }); render() }
   @objc func openSelected() {
     guard let entry = selectedEntries().first, selectedPaths.count == 1 else { return }
     if entry.isDirectory && !entry.isPackage { navigate(to: entry.url) }
@@ -1048,7 +1162,8 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
 
   func sortMenu() -> [ExplorerMenuItem] {
     var items = [(NL("名称"), EntrySort.name), (NL("修改日期"), .modified), (NL("创建日期"), .created), (NL("类型"), .kind), (NL("大小"), .size)].map { name, key in ExplorerMenuItem(title: name, checked: sort == key, action: { [weak self] in self?.sort = key; self?.saveView(group: "sort"); self?.recompute() }) }
-    items += [ExplorerMenuItem(title: NL("递增"), checked: ascending, divider: true, action: { [weak self] in self?.ascending = true; self?.saveView(group: "sort"); self?.recompute() }), ExplorerMenuItem(title: NL("递减"), checked: !ascending, action: { [weak self] in self?.ascending = false; self?.saveView(group: "sort"); self?.recompute() })]; return items
+    items += [ExplorerMenuItem(title: NL("递增"), checked: ascending, divider: true, action: { [weak self] in self?.ascending = true; self?.saveView(group: "sort"); self?.recompute() }), ExplorerMenuItem(title: NL("递减"), checked: !ascending, action: { [weak self] in self?.ascending = false; self?.saveView(group: "sort"); self?.recompute() })]
+    return items
   }
   func columnMenu() -> [ExplorerMenuItem] {
     let titles = ["name": NL("名称"), "modified": NL("修改日期"), "created": NL("创建日期"), "kind": NL("类型"), "size": NL("大小")]
@@ -1086,7 +1201,7 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
       ExplorerMenuItem(title: NL("项目复选框"), icon: "check", checked: checkboxes, divider: true, action: { [weak self] in guard let self else { return }; self.checkboxes.toggle(); self.defaults.set(self.checkboxes, forKey: "checkboxes"); self.render() }),
       ExplorerMenuItem(title: NL("文件扩展名"), icon: "document", checked: extensions, action: { [weak self] in guard let self else { return }; self.extensions.toggle(); self.defaults.set(self.extensions, forKey: "extensions"); self.render() }),
       ExplorerMenuItem(title: NL("隐藏的项目"), icon: "eye", checked: showHidden, action: { [weak self] in self?.toggleHidden() }),
-    ]), ExplorerMenuItem(title: NL("应用到所有文件夹"), divider: true, action: { [weak self] in guard let self else { return }; self.defaults.set(["view": self.mode.rawValue, "iconSize": Int(self.iconSize), "sort": self.sort.rawValue, "ascending": self.ascending, "columns": self.detailColumns.propertyList], forKey: "defaultFolderView"); self.savedFolderViews = [:]; self.defaults.set([String: [String: Any]](), forKey: "folderViews") })]; return items
+    ]), ExplorerMenuItem(title: NL("分组依据"), children: groupingMenu()), ExplorerMenuItem(title: NL("应用到所有文件夹"), divider: true, action: { [weak self] in guard let self else { return }; self.defaults.set(["view": self.mode.rawValue, "iconSize": Int(self.iconSize), "sort": self.sort.rawValue, "ascending": self.ascending, "columns": self.detailColumns.propertyList, "groupBy": self.groupMode.rawValue, "groupNewestFirst": self.groupNewestFirst, "groupFoldersFirst": self.groupFoldersFirst], forKey: "defaultFolderView"); self.savedFolderViews = [:]; self.defaults.set([String: [String: Any]](), forKey: "folderViews") })]; return items
   }
   private func newMenu() -> [ExplorerMenuItem] {
     [(NL("文件夹"), "folder"), (NL("文本文档"), "txt"), (NL("Word 文档"), "docx"), (NL("Excel 工作簿"), "xlsx"), (NL("PowerPoint 演示文稿"), "pptx")].map { name, kind in
@@ -1133,6 +1248,7 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
         ExplorerMenuItem(title: NL("复制"), icon: "copy", shortcut: shortcutHint("copy"), action: { [weak self] in self?.copySelection(cut: false) }),
         ExplorerMenuItem(title: NL("复制文件地址"), icon: "copy", action: { [weak self] in self?.copyPaths() }),
         ExplorerMenuItem(title: NL("重命名"), icon: "rename", enabled: chosen.count == 1 && !busy, shortcut: shortcutHint("rename"), action: { [weak self] in self?.renameSelected() }),
+        ExplorerMenuItem(title: NL("批量重命名"), icon: "rename", enabled: chosen.count >= 2 && !busy, action: { [weak self] in self?.batchRenameSelected() }),
         ExplorerMenuItem(title: NL("共享"), icon: "share", action: { [weak self] in self?.shareSelected() }),
         ExplorerMenuItem(title: deletionTitle, icon: "trash", enabled: !busy && !networkDeletionHint, shortcut: shortcutHint("trash"), action: { [weak self] in self?.trashSelected() })]
       if first.isDirectory, first.url != cloudDrive {
@@ -1272,6 +1388,7 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
   }
   private func renameSelected() {
     guard !busy, !viewingTrash, let entry = selectedEntries().first, selectedPaths.count == 1, let index = entries.firstIndex(where: { $0.id == entry.id }) else { return }
+    guard let index = displayRows.firstIndex(where: { $0.entry == index }) else { return }
     cancelInlineRename()
     let field: NSTextField?
     if mode == .details {
@@ -1299,6 +1416,27 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
         }
       }
       editor.setSelectedRange(NSRange(location: 0, length: (stem as NSString).length))
+    }
+  }
+  private func batchRenameSelected() {
+    guard !busy, !viewingTrash, let window = view.window else { return }
+    let sources = selectedEntries().map(\.url)
+    guard sources.count >= 2 else { return }
+    ExplorerDialogs.batchRename(in: window, sources: sources) { [weak self] options in
+      Task { [weak self] in
+        let result = await Task.detached { Result { try FileActions.batchRenameConflicts(sources, options: options) } }.value
+        guard case .success(let conflicts) = result else {
+          if case .failure(let error) = result { self?.operationError = error.localizedDescription; self?.render() }; return
+        }
+        guard let self else { return }
+        if conflicts.isEmpty {
+          self.runOperation { FileActions.batchRename(sources, options: options) }
+          return
+        }
+        ExplorerDialogs.batchRenameCollision(in: window, conflicts: conflicts) { [weak self] in
+          self?.runOperation { FileActions.batchRename(sources, options: options, collisionPolicy: .keepBoth) }
+        }
+      }
     }
   }
   private func cancelInlineRename() {
@@ -1509,8 +1647,32 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
   private func connectServer(_ address: String) {
     guard !busy else { return }
     Task { @MainActor [weak self] in
-      do { if let destination = try await NativeNetwork.shared.connection(address) { self?.navigate(to: destination) } }
+      do { if let destination = try await NativeNetwork.shared.connection(address) { self?.rememberServer(address); self?.navigate(to: destination) } }
       catch { self?.operationError = error.localizedDescription; self?.render() }
+    }
+  }
+  func rememberServer(_ input: String) {
+    guard let url = try? NativeNetwork.validate(input) else { return }
+    let address = url.absoluteString
+    var addresses = (defaults.stringArray(forKey: "recentSMBServers") ?? []).compactMap { try? NativeNetwork.validate($0).absoluteString }
+    addresses.removeAll { $0 == address }
+    addresses.insert(address, at: 0)
+    defaults.set(Array(addresses.prefix(20)), forKey: "recentSMBServers")
+  }
+  var reconnectServer: (String) async throws -> URL? = { try await NativeNetwork.shared.connection($0) }
+  func reconnectSavedServers() {
+    guard defaults.bool(forKey: "autoReconnectSMB"), reconnectTask == nil, !stopped else { return }
+    let addresses = (defaults.stringArray(forKey: "recentSMBServers") ?? []).prefix(20)
+      .compactMap { try? NativeNetwork.validate($0).absoluteString }
+    let connect = reconnectServer
+    reconnectTask = Task { @MainActor [weak self] in
+      for address in addresses {
+        guard !Task.isCancelled, self?.stopped == false, self?.defaults.bool(forKey: "autoReconnectSMB") == true else { break }
+        do {
+          if try await connect(address) != nil, !Task.isCancelled { self?.rebuildSidebar() }
+        } catch { /* Keep the saved address for the next launch; network may be offline. */ }
+      }
+      self?.reconnectTask = nil
     }
   }
   private func ejectVolume(_ url: URL) {
@@ -1588,6 +1750,7 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
       }
       return event
     }
+    if view.window?.firstResponder is ExplorerGroupCell, event.modifierFlags.intersection([.command, .control, .option]).isEmpty, [36, 76, 49].contains(event.keyCode) { return event }
     if renamingEntry != nil || view.window.map({ ExplorerDialogs.isPresenting(in: $0) || $0.attachedSheet != nil }) == true { return event }
     let fixed: [String: () -> Void] = [
       "Command+Shift+H": { [weak self] in if let self { self.navigate(to: self.home) } },
@@ -1687,10 +1850,10 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
     for (id, button) in commands { button.toolTip = (ExplorerShortcuts.actions.first { $0.id == id }?.title ?? button.toolTip ?? id) + " " + shortcutHint(id) }
   }
   func tableView(_ tableView: NSTableView, pasteboardWriterForRow row: Int) -> NSPasteboardWriting? {
-    guard entries.indices.contains(row) else { return nil }; return entries[row].url as NSURL
+    guard let index = entryIndex(at: row) else { return nil }; return entries[index].url as NSURL
   }
   func collectionView(_ collectionView: NSCollectionView, pasteboardWriterForItemAt indexPath: IndexPath) -> NSPasteboardWriting? {
-    guard entries.indices.contains(indexPath.item) else { return nil }; return entries[indexPath.item].url as NSURL
+    guard let index = entryIndex(at: indexPath.item) else { return nil }; return entries[index].url as NSURL
   }
   private func dropOperation(_ info: NSDraggingInfo, target: URL? = nil) -> NSDragOperation {
     let acceptsTarget: Bool
@@ -1700,22 +1863,22 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
     return NSEvent.modifierFlags.contains(.option) || !info.draggingSourceOperationMask.contains(.move) ? .copy : .move
   }
   func tableView(_ tableView: NSTableView, validateDrop info: NSDraggingInfo, proposedRow row: Int, proposedDropOperation operation: NSTableView.DropOperation) -> NSDragOperation {
-    if entries.indices.contains(row), entries[row].isDirectory, !entries[row].isPackage { tableView.setDropRow(row, dropOperation: .on) }
+    if let index = entryIndex(at: row), entries[index].isDirectory, !entries[index].isPackage { tableView.setDropRow(row, dropOperation: .on) }
     else { tableView.setDropRow(-1, dropOperation: .on) }
     return dropOperation(info)
   }
   func tableView(_ tableView: NSTableView, acceptDrop info: NSDraggingInfo, row: Int, dropOperation operation: NSTableView.DropOperation) -> Bool {
-    let target = entries.indices.contains(row) && entries[row].isDirectory && !entries[row].isPackage ? entries[row].url : directory
+    let target = entryIndex(at: row).flatMap { entries[$0].isDirectory && !entries[$0].isPackage ? entries[$0].url : nil } ?? directory
     return acceptFiles(info, at: target)
   }
   func collectionView(_ collectionView: NSCollectionView, validateDrop info: NSDraggingInfo, proposedIndexPath index: AutoreleasingUnsafeMutablePointer<NSIndexPath>, dropOperation operation: UnsafeMutablePointer<NSCollectionView.DropOperation>) -> NSDragOperation {
     let row = index.pointee.item
-    operation.pointee = entries.indices.contains(row) && entries[row].isDirectory && !entries[row].isPackage ? .on : .before
+    operation.pointee = entryIndex(at: row).map { entries[$0].isDirectory && !entries[$0].isPackage } == true ? .on : .before
     return dropOperation(info)
   }
   func collectionView(_ collectionView: NSCollectionView, acceptDrop info: NSDraggingInfo, indexPath: IndexPath, dropOperation operation: NSCollectionView.DropOperation) -> Bool {
     let row = indexPath.item
-    let target = operation == .on && entries.indices.contains(row) && entries[row].isDirectory && !entries[row].isPackage ? entries[row].url : directory
+    let target = operation == .on ? (entryIndex(at: row).flatMap { entries[$0].isDirectory && !entries[$0].isPackage ? entries[$0].url : nil } ?? directory) : directory
     return acceptFiles(info, at: target)
   }
   private func acceptFiles(_ info: NSDraggingInfo, at target: URL, fromTab: Bool = false) -> Bool {
@@ -1732,8 +1895,7 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
     needsFullDiskAccess = failure.offersPrivacySettings
     return failure.message
   }
-
-  deinit { vcsTimer?.invalidate(); if let focusObserver { NotificationCenter.default.removeObserver(focusObserver) }; preferencesWork?.cancel(); if let preferencesObserver { NotificationCenter.default.removeObserver(preferencesObserver) }; loadTask?.cancel(); queryTask?.cancel(); searchTask?.cancel(); automaticRead?.cancel(); refreshWork?.cancel(); if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }; if let paletteObserver { NotificationCenter.default.removeObserver(paletteObserver) }; if let settingsObserver { NotificationCenter.default.removeObserver(settingsObserver) } }
+  deinit { reconnectTask?.cancel(); groupingTimer?.invalidate(); vcsTimer?.invalidate(); if let focusObserver { NotificationCenter.default.removeObserver(focusObserver) }; preferencesWork?.cancel(); if let preferencesObserver { NotificationCenter.default.removeObserver(preferencesObserver) }; loadTask?.cancel(); queryTask?.cancel(); searchTask?.cancel(); automaticRead?.cancel(); refreshWork?.cancel(); if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }; if let paletteObserver { NotificationCenter.default.removeObserver(paletteObserver) }; if let settingsObserver { NotificationCenter.default.removeObserver(settingsObserver) } }
 }
 
 
