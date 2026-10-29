@@ -37,6 +37,19 @@ enum LatestCoreChecks {
     do { _ = try searchNames("^(a+)+$", .regex); throw CocoaError(.validationMissingMandatoryProperty) }
     catch { try expect((error as NSError).domain == "FileSearch" && (error as NSError).code == 2, "Pathological regex is interrupted") }
     try FileManager.default.removeItem(at: expensive)
+    let topLevel = try FileSearch.search(in: root, query: "", showHidden: false, filters: FileSearchFilters(scope: .folder, kind: .file)).entries.map(\.name)
+    try expect(topLevel.contains("file.txt") && !topLevel.contains("Report.PDF") && !topLevel.contains("项目"), "Search filters can limit results to files in the current folder")
+    let documents = try FileSearch.search(in: root, query: "", showHidden: false, filters: FileSearchFilters(kind: .document)).entries.map(\.name).sorted()
+    try expect(documents == ["Report.PDF", "a[1].txt", "file.txt"], "Search filters identify supported document types without entering packages")
+    let empty = try FileSearch.search(in: root, query: "", showHidden: false, filters: FileSearchFilters(size: .empty)).entries.map(\.name).sorted()
+    try expect(empty == ["Report.PDF", "a[1].txt"], "Search filters use already-read file sizes")
+    try expect(FinderTags.normalize(["  工作  ", "工作", "红色\n6", ""]) == ["工作", "红色"], "Finder tag names normalize Finder color suffixes and duplicates")
+    let tagged = FinderTags.set(["待办", "待办"], on: [file])
+    try expect(tagged.errors.isEmpty && (try FinderTags.names(at: file)) == ["待办"], "Finder tags write through to macOS file metadata")
+    let untagged = FinderTags.set([], on: [file])
+    try expect(untagged.errors.isEmpty && (try FinderTags.names(at: file)).isEmpty, "Finder tags can be removed without changing file content")
+    let filterRoundTrip = FileSearchFilters(scope: .folder, kind: .image, date: .week, size: .small, tag: "  待办  ")
+    try expect(FileSearchFilters(propertyList: filterRoundTrip.propertyList) == FileSearchFilters(scope: .folder, kind: .image, date: .week, size: .small, tag: "待办"), "Search filters persist only bounded user choices")
     let candidates = [FinderFavorite(path: folder.path, name: "收藏名称"), FinderFavorite(path: alias.path, name: "Alias duplicate"), FinderFavorite(path: file.path, name: "File"), FinderFavorite(path: app.path, name: "App"), FinderFavorite(path: "relative", name: "Invalid"), FinderFavorite(path: root.appendingPathComponent("missing").path, name: "Missing")]
     let result = FinderFavoritesReader.filter(candidates)
     try expect(result.places.count == 1 && result.places[0].name == "收藏名称", "Finder deduplicates aliases and retains the first display name")

@@ -36,6 +36,27 @@ enum ExplorerDialogs {
     form.field.selectText(nil)
   }
 
+  static func searchTag(in window: NSWindow, initial: String, submit: @escaping (String) -> Void) {
+    let alert = NSAlert(); alert.messageText = NL("Finder 标签筛选"); alert.informativeText = NL("输入标签名称；留空即可取消标签筛选。")
+    let field = NSTextField(string: initial); field.placeholderString = NL("标签名称")
+    alert.accessoryView = field; alert.addButton(withTitle: NL("应用")); alert.addButton(withTitle: NL("取消"))
+    alert.beginSheetModal(for: window) { response in
+      guard response == .alertFirstButtonReturn else { return }
+      submit(field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+  }
+
+  static func finderTags(in window: NSWindow, initial: [String], count: Int, submit: @escaping ([String]) -> Void) {
+    let alert = NSAlert(); alert.messageText = NL("Finder 标签"); alert.informativeText = NL("为 {0} 个项目设置标签。使用逗号分隔标签名称；应用后会与 Finder 互通。", count)
+    let field = NSTextField(string: initial.joined(separator: ", ")); field.placeholderString = NL("标签名称")
+    alert.accessoryView = field; alert.addButton(withTitle: NL("应用")); alert.addButton(withTitle: NL("取消"))
+    alert.beginSheetModal(for: window) { response in
+      guard response == .alertFirstButtonReturn else { return }
+      let names = field.stringValue.split(separator: ",", omittingEmptySubsequences: false).map { String($0) }
+      submit(FinderTags.normalize(names))
+    }
+  }
+
   static func batchRename(in window: NSWindow, sources: [URL], submit: @escaping (BatchRenameOptions) -> Void) {
     let form = EDBatchRenameForm(sources: sources)
     let body = EDScrollingBody(); body.flow.padding = 0

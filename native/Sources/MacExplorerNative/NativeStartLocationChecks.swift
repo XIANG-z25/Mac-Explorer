@@ -75,7 +75,7 @@ enum NativeStartLocationChecks {
     current.newTab(); try await until { !current.loading }
     try check(current.directory.path == root.path && defaults.string(forKey: NativeStartLocation.preferenceKey) == "home", "Choosing Personal folder applies to subsequent tabs")
     dock.performActionForItem(at: 0); try await until { !delegate.browser.loading }
-    try check(delegate.browser.directory.path == root.path, "New windows also follow Personal folder")
+    try check(delegate.browser.directory.path == root.appendingPathComponent("Downloads").path, "New windows follow the selected default location")
     try NativeSessions.save([NativeSavedWindow(locations: ["explorer://computer", root.absoluteString], frame: "")], to: defaults)
     let restored = NativeSessions.load(defaults)
     delegate.browser.restoreLocations(restored[0].locations)
