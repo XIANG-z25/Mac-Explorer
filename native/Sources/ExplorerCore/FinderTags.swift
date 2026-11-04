@@ -5,8 +5,26 @@ import Darwin
 /// ordinary directory reads never pay for tag metadata.
 public enum FinderTags {
   public static func names(at url: URL) throws -> [String] {
-    let values = try url.resourceValues(forKeys: [.tagNamesKey])
-    return normalize(values.tagNames ?? [])
+    normalize(try storedNames(at: url))
+  }
+
+  private static let attribute = "com.apple.metadata:_kMDItemUserTags"
+  private static func storedNames(at url: URL) throws -> [String] {
+    // URL resource values can remain cached after an xattr edit. Read only this
+    // small attribute and never follow a symlink into an unrelated file.
+    let length = url.path.withCString { Darwin.getxattr($0, attribute, nil, 0, 0, XATTR_NOFOLLOW) }
+    if length < 0 && errno == ENOATTR { return [] }
+    guard length >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+    guard length <= 64 * 1024 else { throw CocoaError(.fileReadCorruptFile) }
+    if length == 0 { return [] }
+    var data = Data(count: length)
+    let count = data.withUnsafeMutableBytes { buffer in
+      url.path.withCString { Darwin.getxattr($0, attribute, buffer.baseAddress, buffer.count, 0, XATTR_NOFOLLOW) }
+    }
+    guard count >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+    data.count = count
+    guard let names = try PropertyListSerialization.propertyList(from: data, format: nil) as? [String] else { throw CocoaError(.fileReadCorruptFile) }
+    return names
   }
 
   public static func commonNames(in urls: [URL]) throws -> [String] {
@@ -51,14 +69,15 @@ public enum FinderTags {
     // this metadata as a binary property-list extended attribute.
     let path = url.path
     if names.isEmpty {
-      let result = path.withCString { Darwin.removexattr($0, "com.apple.metadata:_kMDItemUserTags", 0) }
+      let result = path.withCString { Darwin.removexattr($0, attribute, XATTR_NOFOLLOW) }
       guard result == 0 || errno == ENOATTR else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
       return
     }
-    let storedNames = names.map { $0 + "\n0" }
-    let data = try PropertyListSerialization.data(fromPropertyList: storedNames, format: .binary, options: 0)
+    let existing = try storedNames(at: url)
+    let stored = names.map { name in existing.first { normalize([$0]).first == name } ?? name + "\n0" }
+    let data = try PropertyListSerialization.data(fromPropertyList: stored, format: .binary, options: 0)
     let result = data.withUnsafeBytes { buffer in
-      path.withCString { Darwin.setxattr($0, "com.apple.metadata:_kMDItemUserTags", buffer.baseAddress, data.count, 0, 0) }
+      path.withCString { Darwin.setxattr($0, attribute, buffer.baseAddress, data.count, 0, XATTR_NOFOLLOW) }
     }
     guard result == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
   }

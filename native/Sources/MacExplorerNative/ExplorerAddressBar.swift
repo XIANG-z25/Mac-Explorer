@@ -35,6 +35,7 @@ final class ExplorerAddressBar: NSView, NSTextFieldDelegate {
   private var url = FileManager.default.homeDirectoryForCurrentUser
   private(set) var editing = false
   var onNavigate: ((URL) -> Void)?
+  var onOpenInNewTab: ((URL) -> Void)?
   var onSubmit: ((String) -> Void)?
   var onCopyAddress: ((String) -> Void)?
   var onFileDragValidate: ((NSDraggingInfo, URL) -> NSDragOperation)?
@@ -150,6 +151,7 @@ final class ExplorerAddressBar: NSView, NSTextFieldDelegate {
       let name = pathLabel(target)
       let item = ExplorerButton(title: name) { [weak self] in guard let self else { return }; if target == self.url { self.beginEditing() } else { self.onNavigate?(target) } }
       item.onContextMenu = { [weak self] in self?.addressMenu(target, event: $0) }; item.toolTip = target == url ? NL("单击编辑路径") : target.path
+      item.onCommandClick = { [weak self] in self?.onOpenInNewTab?(target) }
       item.onFileDragValidate = { [weak self] info in self?.onFileDragValidate?(info, target) ?? [] }
       item.onFileDrop = { [weak self] info in self?.onFileDrop?(info, target) ?? false }
       let width = (name as NSString).size(withAttributes: [.font: ExplorerTypography.font()]).width + 16
@@ -160,7 +162,11 @@ final class ExplorerAddressBar: NSView, NSTextFieldDelegate {
   }
   private func addressMenu(_ directory: URL, event: NSEvent) {
     guard let window else { return }; crumbRequest += 1
-    ExplorerMenu.show([ExplorerMenuItem(title: NL("复制地址"), icon: "copy", action: { [weak self] in self?.onCopyAddress?(directory.path) })], at: window.convertPoint(toScreen: event.locationInWindow), owner: window)
+    let items = [
+      ExplorerMenuItem(title: NL("在新标签页中打开"), icon: "plus", action: { [weak self] in self?.onOpenInNewTab?(directory) }),
+      ExplorerMenuItem(title: NL("复制地址"), icon: "copy", action: { [weak self] in self?.onCopyAddress?(directory.path) }),
+    ]
+    ExplorerMenu.show(items, at: window.convertPoint(toScreen: event.locationInWindow), owner: window)
   }
   private func showFolders(_ directory: URL?, anchor: NSView?) {
     guard let anchor else { return }; crumbRequest += 1; let token = crumbRequest, hidden = showHidden

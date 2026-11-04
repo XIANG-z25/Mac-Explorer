@@ -1118,7 +1118,7 @@ final class EDSettingsBody: EDView {
     }
     if let browser {
       let startup = EDGroup(NL("启动位置"))
-      let destinations = [(NL("此电脑"), "computer"), (NL("个人文件夹"), "home"), (NL("自选文件夹…"), "custom")]
+      let destinations = [(NL("此电脑"), "computer"), (NL("个人文件夹"), "home"), (NL("下载"), "downloads"), (NL("桌面"), "desktop"), (NL("文档"), "documents"), (NL("图片"), "pictures"), (NL("音乐"), "music"), (NL("视频"), "movies"), (NL("应用程序"), "applications"), (NL("自选文件夹…"), "custom")]
       let destination = EDChoiceRow(title: NL("默认打开"), options: destinations, value: NativeStartLocation.load(browser.defaults).rawValue) { [weak self, weak browser] value in
         guard let self, let browser, let location = NativeStartLocation(rawValue: value) else { return }
         if location != .custom { browser.defaults.set(location.rawValue, forKey: NativeStartLocation.preferenceKey); self.select(0); return }
@@ -1398,7 +1398,7 @@ final class EDSettingsBody: EDView {
     ], value: NativeUpdateFrequency.saved(in: updateDefaults).rawValue) { value in
       updateDefaults.set(value, forKey: NativeUpdateFrequency.preferenceKey)
     }
-    content.flow.add(frequency) { _ in 34 }
+    if !NativeUpdateCoordinator.isPersonalBuild { content.flow.add(frequency) { _ in 34 } }
     let updates = NativeUpdateView(); content.flow.add(updates) { _ in updates.preferredHeight }
 
     let linksRow = EDView()

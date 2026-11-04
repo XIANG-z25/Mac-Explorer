@@ -39,6 +39,10 @@ enum LatestCoreChecks {
     try FileManager.default.removeItem(at: expensive)
     let topLevel = try FileSearch.search(in: root, query: "", showHidden: false, filters: FileSearchFilters(scope: .folder, kind: .file)).entries.map(\.name)
     try expect(topLevel.contains("file.txt") && !topLevel.contains("Report.PDF") && !topLevel.contains("项目"), "Search filters can limit results to files in the current folder")
+    for mode in [FileSearchMode.text, .wildcard, .regex] {
+      let names = try FileSearch.search(in: root, query: "", showHidden: false, mode: mode, filters: FileSearchFilters(scope: .folder, kind: .file)).entries.map(\.name).sorted()
+      try expect(names == topLevel.sorted(), "Filter-only search also works with \(mode.rawValue) mode")
+    }
     let documents = try FileSearch.search(in: root, query: "", showHidden: false, filters: FileSearchFilters(kind: .document)).entries.map(\.name).sorted()
     try expect(documents == ["Report.PDF", "a[1].txt", "file.txt"], "Search filters identify supported document types without entering packages")
     let empty = try FileSearch.search(in: root, query: "", showHidden: false, filters: FileSearchFilters(size: .empty)).entries.map(\.name).sorted()
@@ -109,6 +113,8 @@ enum LatestCoreChecks {
     defaults.set("home", forKey: NativeStartLocation.preferenceKey)
     try expect(NativeStartLocation.initialURL(explicit: nil, defaults: defaults, home: root) == root, "Personal folder uses the caller's configured home")
     try expect(NativeStartLocation.initialURL(explicit: "explorer://computer", defaults: defaults, home: root).absoluteString == "explorer://computer", "An explicit This PC URL overrides personal folder")
+    defaults.set("downloads", forKey: NativeStartLocation.preferenceKey)
+    try expect(NativeStartLocation.initialURL(explicit: nil, defaults: defaults, home: root).path == root.appendingPathComponent("Downloads").path, "Legacy Downloads startup preference remains supported")
     for invalid in ["network", "trash", "smb://fixture/share", folder.path, 1, ["computer"]] as [Any] {
       defaults.set(invalid, forKey: NativeStartLocation.preferenceKey)
       try expect(NativeStartLocation.load(defaults).url(home: root) == root, "Unknown startup values safely fall back without opening arbitrary paths")

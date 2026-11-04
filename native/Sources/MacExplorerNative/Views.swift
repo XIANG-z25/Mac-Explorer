@@ -190,7 +190,14 @@ final class NameCell: NSTableCellView {
     nameLabel.font = ExplorerTypography.font()
     nameLabel.identifier = NSUserInterfaceItemIdentifier(entry.id)
     nameLabel.stringValue = name ?? entry.name; nameLabel.textColor = ExplorerPalette.text
-    alphaValue = entry.isHidden ? 0.6 : 1; toolTip = entry.url.path; icon.show(entry)
+    alphaValue = entry.isHidden ? 0.6 : 1
+    toolTip = entry.name; nameLabel.toolTip = entry.name; icon.toolTip = entry.name; icon.show(entry)
+  }
+  var selectionContentRect: NSRect {
+    let textWidth = ceil((nameLabel.stringValue as NSString).size(withAttributes: [.font: nameLabel.font ?? ExplorerTypography.font()]).width)
+    let left = checkboxes ? checkbox.frame.minX : icon.frame.minX
+    let right = min(bounds.maxX, nameLabel.frame.minX + min(nameLabel.frame.width, textWidth) + 5)
+    return NSRect(x: left, y: 0, width: max(0, right - left), height: bounds.height)
   }
   override func prepareForReuse() { super.prepareForReuse(); icon.clear(); checkbox.changed = nil; nameLabel.delegate = nil; nameLabel.abortEditing(); nameLabel.isEditable = false; nameLabel.isSelectable = false; nameLabel.isBordered = false; nameLabel.drawsBackground = false }
 }
@@ -201,6 +208,12 @@ final class MetadataCell: NSTableCellView {
   override init(frame: NSRect) { super.init(frame: frame); addSubview(value); textField = value }
   required init?(coder: NSCoder) { fatalError() }
   override func layout() { super.layout(); let height = max(17, ceil(value.font?.ascender ?? 13) - floor(value.font?.descender ?? -3) + 2); value.frame = NSRect(x: 12, y: (bounds.height - height) / 2, width: max(0, bounds.width - 24), height: height) }
+  var selectionContentRect: NSRect {
+    guard !value.stringValue.isEmpty else { return .zero }
+    let width = min(value.frame.width, ceil((value.stringValue as NSString).size(withAttributes: [.font: value.font ?? ExplorerTypography.font()]).width) + 5)
+    let x = value.alignment == .right ? value.frame.maxX - width : value.frame.minX
+    return NSRect(x: x, y: 0, width: width, height: bounds.height)
+  }
 }
 final class ExplorerTableHeaderView: NSTableHeaderView {
   var onMenu: ((NSEvent) -> Void)?
@@ -257,11 +270,25 @@ final class FileTableView: NSTableView {
   func cancelMarqueeSelection() { marquee?.end(cancelled: false); marquee = nil }
   override func reloadData() { cancelMarqueeSelection(); selectionCursor = nil; selectionAnchor = nil; super.reloadData() }
   override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); if window == nil { cancelMarqueeSelection() } }
+  func canStartMarquee(at point: NSPoint) -> Bool {
+    guard visibleRect.contains(point) else { return false }
+    let row = row(at: point)
+    if row < 0 { return true }
+    guard isFileRow(row) else { return false }
+    let column = column(at: point)
+    if column < 0 { return true }
+    guard let cell = view(atColumn: column, row: row, makeIfNecessary: true) else { return false }
+    cell.layoutSubtreeIfNeeded()
+    let local = convert(point, to: cell)
+    if let name = cell as? NameCell { return !name.selectionContentRect.contains(local) }
+    if let metadata = cell as? MetadataCell { return !metadata.selectionContentRect.contains(local) }
+    return false
+  }
   override func mouseDown(with event: NSEvent) {
     guard NativeSelection.canHandle(self) else { super.mouseDown(with: event); return }
     let point = convert(event.locationInWindow, from: nil), clicked = row(at: point)
     if clicked >= 0 && !isFileRow(clicked) { onGroupClick?(clicked); return }
-    if clicked < 0, visibleRect.contains(point) {
+    if canStartMarquee(at: point) {
       window?.makeFirstResponder(self)
       let previousAnchor = selectionAnchor
       if event.modifierFlags.intersection([.command, .control, .shift]).isEmpty { selectionAnchor = nil }
@@ -489,11 +516,13 @@ final class ExplorerCollectionLayout: NSCollectionViewLayout {
   }
 }
 final class ItemSurface: SurfaceView {
+  let fileNameTip = NativeFileNameTip()
+  var fullFileName = "" { didSet { if fullFileName != oldValue { fileNameTip.hide() } } }
   var selected = false { didSet { needsDisplay = true; needsLayout = true } }; var hovered = false { didSet { subviews.compactMap { $0 as? ExplorerCheckbox }.forEach { $0.hovered = hovered }; needsDisplay = true } }
   var bottomLine = false
   private var expandedName: NativeExpandedNameView?
   private var scrollObserver: NSObjectProtocol?
-  override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); if window == nil { expandedName?.removeFromSuperview(); expandedName = nil; if let scrollObserver { NotificationCenter.default.removeObserver(scrollObserver) }; scrollObserver = nil } }
+  override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); if window == nil { fileNameTip.hide(); expandedName?.removeFromSuperview(); expandedName = nil; if let scrollObserver { NotificationCenter.default.removeObserver(scrollObserver) }; scrollObserver = nil } }
   deinit { if let scrollObserver { NotificationCenter.default.removeObserver(scrollObserver) } }
   override func layout() {
     super.layout(); expandedName?.removeFromSuperview(); expandedName = nil
@@ -514,9 +543,19 @@ final class ItemSurface: SurfaceView {
     overlay.frame = NSRect(x: rect.minX, y: rect.minY, width: rect.width, height: ceil(measured.height) + 4)
     collection.addSubview(overlay); expandedName = overlay
   }
-  override func updateTrackingAreas() { super.updateTrackingAreas(); trackingAreas.forEach(removeTrackingArea); addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self)) }
-  override func mouseEntered(with event: NSEvent) { hovered = true }
-  override func mouseExited(with event: NSEvent) { hovered = false }
+  override func updateTrackingAreas() {
+    super.updateTrackingAreas()
+    // AppKit updates an inVisibleRect area itself as the cell moves or scrolls.
+    guard trackingAreas.isEmpty else { return }
+    addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect], owner: self))
+  }
+  override func mouseEntered(with event: NSEvent) {
+    hovered = true
+    guard NSEvent.pressedMouseButtons == 0 else { return }
+    fileNameTip.schedule(name: fullFileName, in: self)
+  }
+  override func mouseExited(with event: NSEvent) { hovered = false; fileNameTip.hide() }
+  override func mouseDown(with event: NSEvent) { fileNameTip.hide(); super.mouseDown(with: event) }
   override func draw(_ dirtyRect: NSRect) {
     ExplorerPalette.surface.setFill(); bounds.fill()
     if selected { ExplorerPalette.selection.setFill(); NSBezierPath(roundedRect: bounds, xRadius: 3, yRadius: 3).fill() }
@@ -560,8 +599,12 @@ final class IconItem: NSCollectionViewItem {
     nameLabel.stringValue = name ?? entry.name; kindLabel.stringValue = entry.kind + (entry.isDirectory ? "" : " · \(ExplorerFormat.size(entry.size))")
     dateLabel.stringValue = NL("修改日期：") + (entry.modified?.formatted(.dateTime.year().month().day()) ?? "—")
     pathLabel.stringValue = NL("位置：") + entry.url.deletingLastPathComponent().path
-    view.toolTip = entry.url.path; icon.show(entry, pixels: size > 64 ? 256 : size > 32 ? 128 : 64); surface.selected = isSelected; view.needsLayout = true
+    surface.fullFileName = entry.name
+    // The surface owns a deterministic hover tip for the whole icon cell.
+    // Avoid also showing AppKit's separate tooltip over its child views.
+    view.toolTip = nil; nameLabel.toolTip = nil; icon.toolTip = nil
+    icon.show(entry, pixels: size > 64 ? 256 : size > 32 ? 128 : 64); surface.selected = isSelected; view.needsLayout = true
     view.setAccessibilityLabel(entry.name)
   }
-  override func prepareForReuse() { super.prepareForReuse(); icon.clear(); checkbox.changed = nil; nameLabel.delegate = nil; nameLabel.abortEditing(); nameLabel.isEditable = false; nameLabel.isSelectable = false; nameLabel.isBordered = false; nameLabel.drawsBackground = false }
+  override func prepareForReuse() { super.prepareForReuse(); surface.fullFileName = ""; surface.hovered = false; icon.clear(); checkbox.changed = nil; nameLabel.delegate = nil; nameLabel.abortEditing(); nameLabel.isEditable = false; nameLabel.isSelectable = false; nameLabel.isBordered = false; nameLabel.drawsBackground = false }
 }

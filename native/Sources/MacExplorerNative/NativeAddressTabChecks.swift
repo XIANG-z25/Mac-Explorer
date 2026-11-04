@@ -118,6 +118,34 @@ enum NativeAddressTabChecks {
     try check(!first.draggingEntered(AddressTabDrag(view: first, board: board)).isEmpty, "Browser folder tabs expose the existing file-drop validation")
     try await until { browser.activeTab == 0 && !browser.loading }
     try check(browser.directory == docs && Data(contentsOf: file) == bytes, "Real Browser tab hover switches folders without changing dragged files")
+    browser.selectedPaths = [file.path]
+    browser.view.layoutSubtreeIfNeeded()
+    func mouse(_ type: NSEvent.EventType, in view: NSView, flags: NSEvent.ModifierFlags = []) -> NSEvent {
+      NSEvent.mouseEvent(with: type, location: view.convert(NSPoint(x: view.bounds.midX, y: view.bounds.midY), to: nil), modifierFlags: flags, timestamp: 0, windowNumber: view.window!.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1)!
+    }
+    func choose(_ title: String) throws {
+      guard let row = (window.childWindows ?? []).flatMap({ descendants($0.contentView) }).first(where: { $0.accessibilityLabel() == title }) else { throw failure("Missing context menu item: " + title) }
+      row.mouseUp(with: mouse(.leftMouseUp, in: row))
+    }
+    let original = browser.tabs[0].id
+    guard let tabView = browser.tabsDocument.subviews.first as? ExplorerTabView else { throw failure("Missing tab to duplicate") }
+    tabView.rightMouseDown(with: mouse(.rightMouseDown, in: tabView))
+    try choose(NL("复制标签页"))
+    try await until { !browser.loading && browser.tabs.count == 3 }
+    try check(browser.activeTab == 1 && browser.directory == docs && browser.tabs[0].id == original && browser.tabs[1].id != original && browser.selectedPaths == [file.path], "Duplicate tab opens beside the source, with the same folder and selection but an independent identity")
+    browser.view.layoutSubtreeIfNeeded()
+    guard let parent = descendants(browser.addressBar).compactMap({ $0 as? ExplorerButton }).first(where: { $0.title == NL("个人文件夹") }) else { throw failure("Missing parent breadcrumb") }
+    parent.mouseDown(with: mouse(.leftMouseDown, in: parent, flags: .command))
+    try await until { !browser.loading && browser.tabs.count == 4 }
+    try check(browser.directory.path == root.path && browser.tabs[1].directory == docs && browser.tabs[1].selectedPaths == [file.path], "Command-click on a breadcrumb opens its folder in a new tab and preserves the old selection")
+    browser.switchTab(to: 1)
+    try await until { !browser.loading && browser.directory == docs }
+    browser.view.layoutSubtreeIfNeeded()
+    guard let parentAgain = descendants(browser.addressBar).compactMap({ $0 as? ExplorerButton }).first(where: { $0.title == NL("个人文件夹") }) else { throw failure("Missing breadcrumb after switching back") }
+    parentAgain.rightMouseDown(with: mouse(.rightMouseDown, in: parentAgain))
+    try choose(NL("在新标签页中打开"))
+    try await until { !browser.loading && browser.tabs.count == 5 }
+    try check(browser.directory.path == root.path && browser.tabs[1].directory == docs, "The breadcrumb context menu opens the correct parent folder in a new tab")
     return checks
   }
   private static func descendants(_ view: NSView?) -> [NSView] { guard let view else { return [] }; return [view] + view.subviews.flatMap { descendants($0) } }

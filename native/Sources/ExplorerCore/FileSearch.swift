@@ -80,8 +80,9 @@ public struct FileSearchFilters: Equatable, Sendable {
 
 public enum FileSearch {
   public static func search(in directory: URL, query: String, showHidden: Bool, mode: FileSearchMode = .text, filters: FileSearchFilters = .init()) throws -> FileSearchResult {
+    let matchAll = query.isEmpty
     let expression: NSRegularExpression?
-    if mode == .text { expression = nil } else {
+    if mode == .text || matchAll { expression = nil } else {
       let pattern = mode == .wildcard
         ? "\\A" + query.map { $0 == "*" ? ".*" : $0 == "?" ? "." : NSRegularExpression.escapedPattern(for: String($0)) }.joined() + "\\z"
         : query
@@ -101,7 +102,8 @@ public enum FileSearch {
       for entry in snapshot.entries where showHidden || !entry.isHidden {
         try Task.checkCancellation(); visited += 1
         let matched: Bool
-        if let expression {
+        if matchAll { matched = true }
+        else if let expression {
           var found = false, timedOut = false
           let started = ProcessInfo.processInfo.systemUptime
           expression.enumerateMatches(in: entry.name, options: .reportProgress, range: NSRange(entry.name.startIndex..., in: entry.name)) { result, _, stop in

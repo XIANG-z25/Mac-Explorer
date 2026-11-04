@@ -14,6 +14,14 @@ enum NativeSmoke {
       checks.append(name)
     }
     do {
+      if ProcessInfo.processInfo.arguments.contains("--smoke-address-tabs") {
+        checks += try await NativeAddressTabChecks.run(source: browser)
+        try write(["passed": true, "checks": checks], to: report); NSApp.terminate(nil); return
+      }
+      if ProcessInfo.processInfo.arguments.contains("--smoke-pointer") {
+        checks += try await NativePointerChecks.run(output: report.deletingLastPathComponent())
+        try write(["passed": true, "checks": checks], to: report); NSApp.terminate(nil); return
+      }
       if let index = CommandLine.arguments.firstIndex(of: "--quit-session-suite"), CommandLine.arguments.indices.contains(index + 1) {
         try await NativeQuitChecks.child(browser: browser, window: window, root: root, suite: CommandLine.arguments[index + 1], report: report)
         return
@@ -87,7 +95,7 @@ enum NativeSmoke {
       try expect(browser.selectedPaths == selected && browser.collection.selectionIndexPaths.count == 2, "selection survives details-to-icons switch")
       try expect(browser.collection.visibleItems().count < 150, "collection reuses visible items")
       let menu = browser.viewMenu()
-      try expect(menu.map(\.title) == ["超大图标", "大图标", "中图标", "小图标", "列表", "详细信息", "平铺", "内容", "列", "详细信息窗格", "预览窗格", "显示", "应用到所有文件夹"], "View menu preserves layout order and includes column customization")
+      try expect(menu.map(\.title) == ["超大图标", "大图标", "中图标", "小图标", "列表", "详细信息", "平铺", "内容", "列", "详细信息窗格", "预览窗格", "显示", "分组依据", "应用到所有文件夹"], "View menu preserves layout order, column customization and grouping")
       for index in [0, 1, 2, 3, 4, 6, 7] {
         menu[index].action?()
         window.contentView?.layoutSubtreeIfNeeded()
@@ -224,6 +232,8 @@ enum NativeSmoke {
       checks += try await NativeLifecycleChecks.run(source: browser)
       checks += try await NativeStartLocationChecks.run(output: report.deletingLastPathComponent())
       checks += try await NativeAddressTabChecks.run(source: browser)
+      checks += try await NativeSearchChecks.run()
+      checks += try await NativePointerChecks.run(output: report.deletingLastPathComponent())
       checks += try await NativeVCSUIChecks.run(parent: window)
       checks += try await NativeVCSEditingChecks.run()
       checks += try await NativePaneChecks.run()
@@ -239,7 +249,9 @@ enum NativeSmoke {
       checks += try await NativeTerminalChecks.run(browser: browser, output: report.deletingLastPathComponent())
       checks += try await NativeAirDropUIChecks.run()
       browser.navigate(to: root)
-      try await until { !browser.loading && browser.entries.count == 10_003 }
+      // Interaction checks can leave hidden files enabled; the fixture contains
+      // exactly one hidden file in addition to the 10,003 visible entries.
+      try await until { !browser.loading && browser.entries.count == (browser.showHidden ? 10_004 : 10_003) }
       metrics["iconLoadsAfterAllInteractions"] = IconLoader.shared.loads
       try write(["passed": true, "checks": checks, "metrics": metrics], to: report)
       NSApp.terminate(nil)
@@ -456,7 +468,7 @@ enum NativeSmoke {
       try await Task.sleep(nanoseconds: 20_000_000)
     }
   }
-  private static func capture(_ window: NSWindow, at url: URL) throws {
+  static func capture(_ window: NSWindow, at url: URL) throws {
     guard let view = window.contentView else { throw Failure(description: "No window content") }
     view.layoutSubtreeIfNeeded()
     view.displayIfNeeded()

@@ -125,14 +125,23 @@ enum NativeParityChecks {
     try button("关于").performClick(nil)
     try await Task.sleep(nanoseconds: 100_000_000)
     let text = views().compactMap { ($0 as? NSTextField)?.stringValue }.joined(separator: "\n")
-    try expect(text.contains("尚未检查更新") && text.contains("GPL-3.0-only") && !text.contains("当前版本："), "About restores update status and copyright without duplicate version")
-    try expect(text.contains("自动检查更新") && views().compactMap { $0 as? NSButton }.contains { $0.title == "每天" }, "About shows automatic update frequency with daily default")
+    let personal = NativeUpdateCoordinator.isPersonalBuild
+    try expect(text.contains(personal ? "本地自用版本，通过本地构建更新。" : "尚未检查更新") && text.contains("GPL-3.0-only") && !text.contains("当前版本："), "About shows the build's update status and copyright")
+    if personal {
+      try expect(!text.contains("自动检查更新"), "Personal builds do not offer upstream automatic updates")
+    } else {
+      try expect(text.contains("自动检查更新") && views().compactMap { $0 as? NSButton }.contains { $0.title == "每天" }, "About shows automatic update frequency with daily default")
+    }
     for title in ["项目主页", "GitHub 发布页", "问题反馈", "开源许可"] { _ = try button(title) }
     checks.append("All four About project links are present")
     let updates = NativeUpdateView()
     var update = NativeUpdateState(currentVersion: "1.1.0"); update.latestVersion = "1.2.0"; update.status = "available"
     updates.render(update)
     let updateButtons = updates.subviews.compactMap { $0 as? NSButton }
+    if personal {
+      try expect(updateButtons.allSatisfy { $0.isHidden }, "Personal builds cannot install upstream updates")
+      return checks
+    }
     try expect(updateButtons.contains { $0.title == "检查更新" && !$0.isHidden } && updateButtons.contains { $0.title == "下载更新" && !$0.isHidden }, "Available updates retain both Check and Download actions")
     update.status = "error"; updates.render(update)
     try expect(updateButtons.contains { $0.title == "下载更新" && !$0.isHidden }, "Failed downloads retain the retry action")

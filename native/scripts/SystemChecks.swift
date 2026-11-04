@@ -54,6 +54,11 @@ struct SystemChecks {
     _ = try viewer.perform("restore")
     try check(read(system).isEqual(to: original), "Restore all original associations")
     try check(!fm.fileExists(atPath: backup.path), "Remove completed backup")
+    let personal = NativeFileViewer(backupURL: backup, fixture: system, appID: "local.zx.macexplorer.daily")
+    try check(personal.perform("enable").canRestore, "Personal build can enable its own restorable viewer association")
+    try check(read(system)["global"] as? String == "local.zx.macexplorer.daily", "Viewer association targets the installed personal bundle")
+    _ = try personal.perform("restore")
+    try check(read(system).isEqual(to: original), "Personal build restores all original associations")
     let failing = NativeFileViewer(backupURL: backup, fixture: system, failFirstWrite: true)
     try rejected("partial preference save") { _ = try failing.perform("enable") }
     try check(read(system).isEqual(to: original), "Rollback partial preference write")

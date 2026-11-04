@@ -84,6 +84,7 @@
   "正在解压…": "Extracting…",
   "已解压": "Extracted",
   "在新标签页中打开": "Open in new tab",
+  "复制标签页": "Duplicate tab",
   "压缩为 ZIP": "Compress to ZIP",
   "正在压缩…": "Compressing…",
   "已压缩": "Compressed",
@@ -1018,6 +1019,7 @@
   "Finder 标签筛选": "Filter by Finder tag",
   "输入标签名称；留空即可取消标签筛选。": "Enter a tag name. Leave it empty to remove the tag filter.",
   "标签名称": "Tag name",
+  "应用": "Apply",
   "Finder 标签": "Finder Tags",
   "为 {0} 个项目设置标签。使用逗号分隔标签名称；应用后会与 Finder 互通。": "Set tags for {0} items. Separate tag names with commas; changes also appear in Finder.",
   "Finder 标签…": "Finder Tags…",
@@ -1036,5 +1038,6 @@
   "搜索范围": "Search scope",
   "清除筛选": "Clear filters",
   "筛选": "Filter",
-  "已启用筛选": "Filters on"
+  "已启用筛选": "Filters on",
+  "本地自用版本，通过本地构建更新。": "Personal build. Update using a local build."
 }

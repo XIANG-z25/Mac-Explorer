@@ -7,6 +7,7 @@ public struct NativeCloudDrive: Equatable, Sendable {
   public let url: URL
   public let name: String
   public let provider: Provider
+  public var sourceURLs: [URL]
 }
 
 public enum NativeCloudDrives {
@@ -16,16 +17,23 @@ public enum NativeCloudDrives {
     var candidates = (try? manager.contentsOfDirectory(at: cloudStorage, includingPropertiesForKeys: [.isDirectoryKey, .isPackageKey, .isSymbolicLinkKey], options: [.skipsHiddenFiles])) ?? []
     // Legacy sync clients may still expose a home folder instead of File Provider storage.
     candidates += ["OneDrive", "Box", "Dropbox", "Google Drive"].map { home.appendingPathComponent($0, isDirectory: true) }
-    candidates += mountedVolumes ?? (manager.mountedVolumeURLs(includingResourceValuesForKeys: [.volumeNameKey], options: [.skipHiddenVolumes]) ?? [])
+    candidates += mountedVolumes ?? (manager.mountedVolumeURLs(includingResourceValuesForKeys: nil, options: [.skipHiddenVolumes]) ?? [])
 
-    var seen = Set<String>(), result: [NativeCloudDrive] = []
+    var indices: [String: Int] = [:], result: [NativeCloudDrive] = []
     for candidate in candidates {
+      // Reject ordinary volumes before any metadata request; an offline NAS can
+      // otherwise block discovery even though it is not a cloud provider.
+      guard !Task.isCancelled, let provider = provider(for: candidate.lastPathComponent) else { continue }
       let resolved = candidate.resolvingSymlinksInPath().standardizedFileURL
       let path = resolved.path
-      guard seen.insert(path).inserted,
-            let values = try? resolved.resourceValues(forKeys: [.isDirectoryKey, .isPackageKey]), values.isDirectory == true, values.isPackage != true,
-            let provider = provider(for: candidate.lastPathComponent) else { continue }
-      result.append(NativeCloudDrive(url: resolved, name: displayName(candidate.lastPathComponent, provider: provider), provider: provider))
+      let source = candidate.standardizedFileURL
+      if let index = indices[path] {
+        if !result[index].sourceURLs.contains(source) { result[index].sourceURLs.append(source) }
+        continue
+      }
+      guard let values = try? resolved.resourceValues(forKeys: [.isDirectoryKey, .isPackageKey]), values.isDirectory == true, values.isPackage != true else { continue }
+      indices[path] = result.count
+      result.append(NativeCloudDrive(url: resolved, name: displayName(candidate.lastPathComponent, provider: provider), provider: provider, sourceURLs: [source]))
     }
     return result.sorted { lhs, rhs in
       let left = rank(lhs.provider), right = rank(rhs.provider)

@@ -100,6 +100,8 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
   private var providerCloudDrives: [NativeCloudDrive] = []
   private var providerCloudDrivesCheckedAt = Date.distantPast
   private var providerCloudDrivesHomePath = ""
+  private var providerCloudDrivesTask: Task<[NativeCloudDrive], Never>?
+  private var providerCloudDrivesRefreshPending = false
   private var virtualLocation = ""
   private var savedFolderViews: [String: [String: Any]] = [:]
   private var expanded = Set<String>()
@@ -206,6 +208,7 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
     for (control, tip) in [(backButton, NL("后退 ⌘[")), (forwardButton, NL("前进 ⌘]")), (upButton, NL("向上一级 ⌘↑")), (refreshButton, NL("刷新 ⌘R"))] { control.toolTip = tip }
     addressBar.recentPaths = defaults.stringArray(forKey: "typedPaths") ?? []
     addressBar.onNavigate = { [weak self] in self?.navigate(to: $0) }; addressBar.onSubmit = { [weak self] in self?.goAddress($0) }
+    addressBar.onOpenInNewTab = { [weak self] in self?.openTab(at: $0) }
     addressBar.labelForPath = { [weak self] in self?.locationLabel($0) ?? $0.lastPathComponent }
     addressBar.onCopyAddress = { [weak self] value in self?.filePasteboard.clearContents(); self?.filePasteboard.setString(value, forType: .string) }
     addressBar.onError = { [weak self] error in self?.lastError = self?.errorMessage(error); self?.render() }
@@ -464,6 +467,11 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
       item.onDrop = { [weak self] info in self?.acceptFiles(info, at: tab.directory, fromTab: true) ?? false }
       item.canDetach = { [weak self] in self?.canDetachTab == true }
       item.onDetach = { [weak self] point in self?.detachTab(id: id, at: point) ?? false }
+      item.onContextMenu = { [weak self] event in
+        guard let window = self?.view.window else { return }
+        let duplicate = ExplorerMenuItem(title: NL("复制标签页"), icon: "copy", action: { [weak self] in self?.duplicateTab(id: id) })
+        ExplorerMenu.show([duplicate], at: window.convertPoint(toScreen: event.locationInWindow), owner: window)
+      }
       if tab.directory.deletingLastPathComponent().path == home.path || tab.directory.path == "/Applications" { item.badgeName = ["Applications": "applications", "Desktop": "desktop", "Documents": "document", "Downloads": "download", "Pictures": "image", "Music": "music", "Movies": "video"][tab.directory.lastPathComponent] }
       if tab.directory.scheme == "explorer" { item.locationIcon = tab.directory.host == "computer" ? "computer" : tab.directory.host }
       if tab.directory == home.appendingPathComponent(".Trash") { item.locationIcon = "trash" }
@@ -474,7 +482,7 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
   func locationLabel(_ url: URL) -> String {
     if url.scheme == "explorer" { return ["computer": NL("此电脑"), "airdrop": NL("隔空投送"), "network": NL("网络"), "trash": NL("回收站")][url.host ?? ""] ?? NL("此电脑") }
     if url == cloudDrive { return "iCloud Drive" }
-    if let drive = providerCloudDrives.first(where: { $0.url == url.resolvingSymlinksInPath().standardizedFileURL }) { return drive.name }
+    if let drive = providerCloudDrives.first(where: { $0.url == url.standardizedFileURL || $0.sourceURLs.contains(url.standardizedFileURL) }) { return drive.name }
     if let name = places.importedNames[url.path] { return name }
     if url.path == "/" { return "Macintosh HD" }; if url.path == home.path { return NL("个人文件夹") }
     if url == home.appendingPathComponent(".Trash") { return NL("回收站") }
@@ -489,16 +497,29 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
     }
   }
   private func refreshProviderCloudDrives(force: Bool = false) {
-    let homePath = home.resolvingSymlinksInPath().standardizedFileURL.path
+    guard !stopped else { return }
+    guard providerCloudDrivesTask == nil else { providerCloudDrivesRefreshPending = providerCloudDrivesRefreshPending || force; return }
+    let targetHome = home, homePath = home.standardizedFileURL.path
     guard force || homePath != providerCloudDrivesHomePath || Date().timeIntervalSince(providerCloudDrivesCheckedAt) >= 8 else { return }
     providerCloudDrivesCheckedAt = Date()
     providerCloudDrivesHomePath = homePath
-    providerCloudDrives = NativeCloudDrives.discover(home: home)
+    let task = Task.detached(priority: .utility) { NativeCloudDrives.discover(home: targetHome) }
+    providerCloudDrivesTask = task
+    Task { @MainActor [weak self] in
+      let drives = await task.value
+      guard let self, !self.stopped else { return }
+      self.providerCloudDrivesTask = nil
+      let retry = self.providerCloudDrivesRefreshPending
+      self.providerCloudDrivesRefreshPending = false
+      guard self.home.standardizedFileURL.path == homePath else { self.refreshProviderCloudDrives(force: true); return }
+      if self.providerCloudDrives != drives { self.providerCloudDrives = drives; self.rebuildSidebar(); self.rebuildTabs() }
+      if retry { self.refreshProviderCloudDrives(force: true) }
+    }
   }
   private func isCloudLocation(_ url: URL) -> Bool {
-    let resolved = url.resolvingSymlinksInPath().standardizedFileURL
-    if let cloudDrive, resolved == cloudDrive.resolvingSymlinksInPath().standardizedFileURL { return true }
-    return providerCloudDrives.contains { $0.url == resolved }
+    let path = url.standardizedFileURL
+    if path == home.appendingPathComponent("Library/Mobile Documents/com~apple~CloudDocs").standardizedFileURL { return true }
+    return providerCloudDrives.contains { $0.url == path || $0.sourceURLs.contains(path) }
   }
   var pinnedPaths: [String] { places.visible(defaultPaths: defaultPlaces.map { $0.0.path }).filter { !isCloudLocation(URL(fileURLWithPath: $0)) } }
   private func savePlaces() { places.save(to: defaults); NotificationCenter.default.post(name: Self.placesChanged, object: defaults) }
@@ -572,7 +593,7 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
     row(NL("此电脑"), URL(string: "explorer://computer")!, "computer")
     sidebarRows.last?.1.expanded = true; sidebarRows.last?.1.onExpand = nil
     row((try? URL(fileURLWithPath: "/").resourceValues(forKeys: [.volumeNameKey]).volumeName) ?? "Macintosh HD", URL(fileURLWithPath: "/"), "drive", level: 1)
-    for volume in FileManager.default.mountedVolumeURLs(includingResourceValuesForKeys: nil, options: [.skipHiddenVolumes]) ?? [] where volume.path.hasPrefix("/Volumes/") && !providerCloudDrives.contains(where: { $0.url == volume.resolvingSymlinksInPath().standardizedFileURL }) { row(volume.lastPathComponent, volume, "drive", level: 1) }
+    for volume in FileManager.default.mountedVolumeURLs(includingResourceValuesForKeys: nil, options: [.skipHiddenVolumes]) ?? [] where volume.path.hasPrefix("/Volumes/") && !providerCloudDrives.contains(where: { $0.url == volume.standardizedFileURL || $0.sourceURLs.contains(volume.standardizedFileURL) }) { row(volume.lastPathComponent, volume, "drive", level: 1) }
     if let cloudDrive { row("iCloud Drive", cloudDrive, "cloud") }
     for drive in providerCloudDrives { row(drive.name, drive.url, "cloud") }
     row(NL("回收站"), URL(string: "explorer://trash")!, "trash")
@@ -843,6 +864,7 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
   func stopObserving() {
     guard !stopped else { return }; stopped = true; generation += 1; queryGeneration += 1
     directoryWatcher.stop(); automaticRead?.cancel(); reconnectTask?.cancel(); reconnectTask = nil; refreshWork?.cancel(); refreshWork = nil
+    providerCloudDrivesTask?.cancel(); providerCloudDrivesTask = nil
     loadTask?.cancel(); queryTask?.cancel(); searchTask?.cancel()
     inputNavigation?.close(); inputNavigation = nil; preferencesWork?.cancel(); vcsTimer?.invalidate(); vcsTimer = nil; groupingTimer?.invalidate(); groupingTimer = nil
     if let focusObserver { NotificationCenter.default.removeObserver(focusObserver); self.focusObserver = nil }
@@ -926,6 +948,7 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
     if collectionLayout.mode != mode {
       collectionLayout = ExplorerCollectionLayout()
       collectionLayout.mode = mode
+      collectionLayout.groupHeaderRows = Set(displayRows.indices.filter { displayRows[$0].group != nil })
       if isViewLoaded { collection.collectionViewLayout = collectionLayout }
     }
     collectionLayout.mode = mode; collectionLayout.iconSize = iconSize; collectionLayout.compact = compact
@@ -933,7 +956,9 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
   func updateMode(persist: Bool = true) {
     configureCollectionLayout(); table.rowHeight = preferredRowHeight
     collectionLayout.invalidateLayout(); sizeSlider.doubleValue = Double(iconSize); sizeValue.stringValue = "\(Int(iconSize))"
-    if persist { saveView() }; render(); view.window?.makeFirstResponder(mode == .details ? table : collection)
+    if persist { saveView() }; render()
+    view.layoutSubtreeIfNeeded(); collection.layoutSubtreeIfNeeded()
+    view.window?.makeFirstResponder(mode == .details ? table : collection)
   }
   func setView(_ layout: ExplorerLayoutMode, size: CGFloat? = nil) { mode = layout; if let size { iconSize = size }; updateMode() }
   @objc private func resizeIcons() { iconSize = CGFloat((sizeSlider.doubleValue / 8).rounded() * 8); updateMode() }
@@ -1105,8 +1130,26 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
   }
   func openTab(at url: URL) {
     rememberLocationState()
-    tabs.append(BrowserTab(history: [url])); activeTab = tabs.count - 1; prepareLocationState(BrowserLocationState()); search.stringValue = ""; searchActive = false; restoreView(directory, touch: true); reload()
-    view.layoutSubtreeIfNeeded(); tabsDocument.subviews.last?.scrollToVisible(tabsDocument.subviews.last!.bounds)
+    insertTab(BrowserTab(history: [url]), at: tabs.count)
+  }
+  private func duplicateTab(id: UUID) {
+    guard let index = tabs.firstIndex(where: { $0.id == id }) else { return }
+    rememberLocationState()
+    let source = tabs[index]
+    let state = source.locationStates[source.index] ?? BrowserLocationState(selection: source.selectedPaths)
+    insertTab(BrowserTab(history: [source.directory], selectedPaths: state.selection, locationStates: [0: state]), at: index + 1)
+  }
+  private func insertTab(_ tab: BrowserTab, at index: Int) {
+    tabs.insert(tab, at: index)
+    activeTab = index
+    prepareLocationState(tab.locationStates[tab.index] ?? BrowserLocationState())
+    search.stringValue = ""; searchActive = false
+    restoreView(directory, touch: true); reload()
+    view.layoutSubtreeIfNeeded()
+    if tabsDocument.subviews.indices.contains(index) {
+      let item = tabsDocument.subviews[index]
+      item.scrollToVisible(item.bounds)
+    }
   }
   @objc func newTab() { openTab(at: NativeStartLocation.load(defaults).url(home: home, defaults: defaults)) }
   @objc func closeTab() { closeTab(at: activeTab) }
@@ -1183,11 +1226,18 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
     }
   }
 
+  func applySearchFilters(_ filters: FileSearchFilters) {
+    searchFilters = filters
+    defaults.set(searchFilters.propertyList, forKey: "searchFilters")
+    searchBox.filtersActive = !searchFilters.isDefault
+    if !search.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !searchFilters.isDefault { performSearch() }
+    else { searchActive = false; reload() }
+  }
+
   private func showSearchFilters() {
-    guard let window = view.window else { return }
+    guard view.window != nil else { return }
     func set(_ update: (inout FileSearchFilters) -> Void) {
-      update(&searchFilters); defaults.set(searchFilters.propertyList, forKey: "searchFilters"); searchBox.filtersActive = !searchFilters.isDefault
-      if !search.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !searchFilters.isDefault { performSearch() } else { searchActive = false; reload() }
+      var filters = searchFilters; update(&filters); applySearchFilters(filters)
     }
     func choices<T: CaseIterable & RawRepresentable>(_ values: T.AllCases, title: (T) -> String, selected: T, update: @escaping (T) -> Void) -> [ExplorerMenuItem] where T.RawValue == String {
       values.map { value in ExplorerMenuItem(title: title(value), checked: value == selected, radio: true, action: { update(value) }) }
@@ -1211,9 +1261,7 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
   private func editSearchTag() {
     guard let window = view.window else { return }
     ExplorerDialogs.searchTag(in: window, initial: searchFilters.tag) { [weak self] tag in
-      guard let self else { return }; self.searchFilters.tag = tag
-      self.defaults.set(self.searchFilters.propertyList, forKey: "searchFilters"); self.searchBox.filtersActive = !self.searchFilters.isDefault
-      if !self.search.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !self.searchFilters.isDefault { self.performSearch() }
+      guard let self else { return }; var filters = self.searchFilters; filters.tag = tag; self.applySearchFilters(filters)
     }
   }
 

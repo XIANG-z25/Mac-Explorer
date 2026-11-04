@@ -9,15 +9,17 @@ import subprocess
 import sys
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--validation", action="store_true", help="Build a separate bundle without replacing the running prototype")
+profile = parser.add_mutually_exclusive_group()
+profile.add_argument("--validation", action="store_true", help="Build a separate bundle without replacing the running prototype")
+profile.add_argument("--personal", action="store_true", help="Keep the installed personal bundle identity and preferences, without Daily mode")
 args = parser.parse_args()
 root = pathlib.Path(__file__).resolve().parents[1]
 subprocess.run(["swift", "build", "--package-path", str(root), "-c", "release"] + (["-Xswiftc", "-DEXPLORER_DELETION_TESTS"] if args.validation else []), check=True)
 bin_dir = pathlib.Path(subprocess.check_output(
     ["swift", "build", "--package-path", str(root), "-c", "release", "--show-bin-path"], text=True
 ).strip())
-output_directory = root / "output" / "validation" if args.validation else root / "output"
-app = output_directory / "Mac Explorer.app"
+output_directory = root / "output" / "validation" if args.validation else root / "output" / "personal" if args.personal else root / "output"
+app = output_directory / ("Mac Explorer Daily.app" if args.personal else "Mac Explorer.app")
 contents = app / "Contents"
 binary_path = str(contents / "MacOS" / "MacExplorerNative")
 processes = subprocess.run(["/bin/ps", "-axo", "command="], capture_output=True, text=True, check=True).stdout.splitlines()
@@ -41,6 +43,8 @@ shutil.copy2(root / "Vendor" / "libsmb2" / "README.mac-explorer.md", contents / 
 shutil.copy2(root / "ICON-LICENSE.txt", contents / "Resources" / "ICON-LICENSE.txt")
 shutil.copytree(root.parent / "electron" / "templates", contents / "Resources" / "templates", dirs_exist_ok=True)
 shutil.copy2(bin_dir / "MacExplorerNative", contents / "MacOS" / "MacExplorerNative")
+if args.personal:
+    subprocess.run(["xcrun", "strip", "-x", str(contents / "MacOS" / "MacExplorerNative")], check=True)
 icon_source = root.parent / "electron" / "native" / "FileIcon.swift"
 icon_binary = contents / "Resources" / "file-icon"
 if not icon_binary.exists() or icon_binary.stat().st_mtime < icon_source.stat().st_mtime:
@@ -48,12 +52,12 @@ if not icon_binary.exists() or icon_binary.stat().st_mtime < icon_source.stat().
 subprocess.run(["codesign", "--force", "--sign", "-", str(icon_binary)], check=True)
 info = {
     "CFBundleExecutable": "MacExplorerNative",
-    "CFBundleIdentifier": "local.macexplorer.native-validation" if args.validation else "local.macexplorer.native-prototype",
-    "CFBundleName": "Mac Explorer",
-    "CFBundleDisplayName": "Mac Explorer",
+    "CFBundleIdentifier": "local.macexplorer.native-validation" if args.validation else "local.zx.macexplorer.daily" if args.personal else "local.macexplorer.native-prototype",
+    "CFBundleName": "Mac Explorer Daily" if args.personal else "Mac Explorer",
+    "CFBundleDisplayName": "Mac Explorer Daily" if args.personal else "Mac Explorer",
     "CFBundlePackageType": "APPL",
     "CFBundleIconFile": "AppIcon.icns",
-    "CFBundleShortVersionString": (root / "VERSION").read_text().strip(),
+    "CFBundleShortVersionString": "1.7.0" if args.personal else (root / "VERSION").read_text().strip(),
     "CFBundleVersion": "1",
     "LSMinimumSystemVersion": "13.0",
     "NSHighResolutionCapable": True,
@@ -65,6 +69,8 @@ info = {
     "NSDocumentsFolderUsageDescription": "浏览文稿中的文件。",
     "NSDownloadsFolderUsageDescription": "浏览下载中的文件。",
 }
+if args.personal:
+    info["ExplorerPersonalBuild"] = True
 with (contents / "Info.plist").open("wb") as output:
     plistlib.dump(info, output)
 subprocess.run(["codesign", "--force", "--sign", "-", str(app)], check=True)

@@ -4,6 +4,7 @@ import ExplorerCore
 
 @MainActor
 final class NativeUpdateCoordinator {
+  static var isPersonalBuild: Bool { Bundle.main.object(forInfoDictionaryKey: "ExplorerPersonalBuild") as? Bool == true }
   private static var instances: [String: NativeUpdateCoordinator] = [:]
   static func current() -> NativeUpdateCoordinator {
     let app = Bundle.main.bundleURL.resolvingSymlinksInPath(), key = app.path
@@ -23,7 +24,7 @@ final class NativeUpdateCoordinator {
     updates = NativeUpdates(version: version, app: app, cache: cache)
   }
   func startAutomaticChecks() {
-    guard automaticTimer == nil else { return }
+    guard !Self.isPersonalBuild, automaticTimer == nil else { return }
     checkAutomatically(launching: true)
     automaticTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
       Task { @MainActor [weak self] in self?.checkAutomatically(launching: false) }
@@ -39,7 +40,7 @@ final class NativeUpdateCoordinator {
     perform("checking")
   }
   func perform(_ status: String) {
-    guard task == nil else { return }; installationError = ""
+    guard !Self.isPersonalBuild, task == nil else { return }; installationError = ""
     // The update belongs to the application, so closing Settings does not cancel it.
     task = Task {
       defer { task = nil }
@@ -81,6 +82,7 @@ final class NativeUpdateView: SurfaceView {
     status.alignment = .center
     progress.style = .bar; progress.isIndeterminate = true; progress.isHidden = true
     status.maximumNumberOfLines = 2
+    if NativeUpdateCoordinator.isPersonalBuild { render(current); return }
     poll = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
       Task { @MainActor [weak self] in guard let self else { return }; self.render(await self.coordinator.updates.state) }
     }
@@ -98,6 +100,11 @@ final class NativeUpdateView: SurfaceView {
   }
   @objc private func downloadUpdate() { coordinator.perform("available"); render(current) }
   func render(_ state: NativeUpdateState) {
+    if NativeUpdateCoordinator.isPersonalBuild {
+      status.stringValue = NL("本地自用版本，通过本地构建更新。")
+      action.isHidden = true; download.isHidden = true; progress.isHidden = true; transferred.isHidden = true; needsLayout = true
+      return
+    }
     current = state
     let busy = coordinator.isBusy || ["checking", "downloading", "verifying", "installing"].contains(current.status)
     action.isEnabled = !busy

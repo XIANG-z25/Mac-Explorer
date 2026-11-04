@@ -26,7 +26,7 @@ public enum NativeSessions {
 
 /// Explicit paths and saved sessions take precedence over the default landing page.
 public enum NativeStartLocation: String, Sendable {
-  case home, computer, custom
+  case home, computer, custom, desktop, downloads, documents, pictures, music, movies, applications
   public static let preferenceKey = "startLocation"
   public static let customPathKey = "startFolderPath"
   public static func load(_ defaults: UserDefaults) -> Self {
@@ -34,6 +34,11 @@ public enum NativeStartLocation: String, Sendable {
   }
   public func url(home: URL, defaults: UserDefaults = .standard) -> URL {
     if self == .computer { return URL(string: "explorer://computer")! }
+    let standardFolders: [Self: String] = [.desktop: "Desktop", .downloads: "Downloads", .documents: "Documents", .pictures: "Pictures", .music: "Music", .movies: "Movies", .applications: "Applications"]
+    if let name = standardFolders[self] {
+      if self == .applications, home == FileManager.default.homeDirectoryForCurrentUser { return URL(fileURLWithPath: "/Applications", isDirectory: true) }
+      return home.appendingPathComponent(name, isDirectory: true)
+    }
     if self == .custom, let path = defaults.string(forKey: Self.customPathKey), path.hasPrefix("/"), !path.contains("\0") {
       let folder = URL(fileURLWithPath: path, isDirectory: true)
       if (try? folder.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true { return folder }

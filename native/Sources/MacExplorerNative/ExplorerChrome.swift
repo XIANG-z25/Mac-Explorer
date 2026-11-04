@@ -68,6 +68,7 @@ private func drawExplorerFocus(in rect: NSRect) {
 /// A native target/action button with Explorer painting instead of an AppKit bezel.
 final class ExplorerButton: NSButton {
   var onPress: (() -> Void)?
+  var onCommandClick: (() -> Void)?
   var onContextMenu: ((NSEvent) -> Void)?
   var onFileDragValidate: ((NSDraggingInfo) -> NSDragOperation)?
   var onFileDrop: ((NSDraggingInfo) -> Bool)?
@@ -133,6 +134,10 @@ final class ExplorerButton: NSButton {
     hoverArea = area
   }
 
+  override func mouseDown(with event: NSEvent) {
+    if isEnabled, event.modifierFlags.contains(.command), let onCommandClick { onCommandClick(); return }
+    super.mouseDown(with: event)
+  }
   override func rightMouseDown(with event: NSEvent) { if let onContextMenu { onContextMenu(event) } else { super.rightMouseDown(with: event) } }
   override func mouseEntered(with event: NSEvent) { hovered = true; needsDisplay = true }
   override func mouseExited(with event: NSEvent) { hovered = false; needsDisplay = true }
@@ -192,6 +197,7 @@ final class ExplorerButton: NSButton {
 }
 
 final class ExplorerTabView: NSView {
+  var onContextMenu: ((NSEvent) -> Void)?
   var onDragValidate: ((NSDraggingInfo) -> NSDragOperation)?
   var onDrop: ((NSDraggingInfo) -> Bool)?
   private var dragHover: DispatchWorkItem?
@@ -276,9 +282,11 @@ final class ExplorerTabView: NSView {
   override func viewWillMove(toWindow newWindow: NSWindow?) { if newWindow == nil { endFileDrag() }; super.viewWillMove(toWindow: newWindow) }
   deinit { dragHover?.cancel() }
   override func mouseDown(with event: NSEvent) {
+    if event.modifierFlags.contains(.control), let onContextMenu { onContextMenu(event); return }
     mousePressed = true; window?.makeFirstResponder(self)
     dragStart = canDetach?() == true ? event.locationInWindow : nil
   }
+  override func rightMouseDown(with event: NSEvent) { if let onContextMenu { onContextMenu(event) } else { super.rightMouseDown(with: event) } }
   override func mouseDragged(with event: NSEvent) {
     guard let start = dragStart, let window, canDetach?() == true,
       abs(event.locationInWindow.y - start.y) >= 24,
