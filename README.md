@@ -3,13 +3,13 @@
   <h1>Mac Explorer Daily</h1>
   <p>用熟悉的 Windows 11 操作习惯，在 Mac 上整理文件。</p>
   <p>简体中文 · <a href="README.zh-TW.md">繁體中文</a> · <a href="README.en.md">English</a></p>
-  <p><a href="https://github.com/XIANG-z25/Mac-Explorer/releases/download/v1.7.0/Mac-Explorer-Daily-1.7.0-mac-arm64.dmg"><strong>下载 1.7.0 DMG</strong></a> · <a href="https://github.com/XIANG-z25/Mac-Explorer/releases/tag/v1.7.0">发行说明</a></p>
+  <p><a href="https://github.com/XIANG-z25/Mac-Explorer/releases/download/v1.7.8/Mac-Explorer-Daily-1.7.8-mac-arm64.dmg"><strong>下载 1.7.8 DMG</strong></a> · <a href="https://github.com/XIANG-z25/Mac-Explorer/releases/tag/v1.7.8">发行说明</a></p>
   <p><sub>Apple Silicon（M 系列）· macOS 13 或以上 · Swift / AppKit</sub></p>
 </div>
 
 ## Daily 1.7.8（构建 2）相比上游 1.7.1
 
-当前源码分支是 `zx/daily-native`，已合并[上游 1.7.1](https://github.com/qixiaoyu27/Mac-Explorer/commit/68a4677df9f6ba7b54e947577ded3ebd932e9357)。Daily 以独立的应用标识构建，可保留此前 Daily 的偏好设置。**1.7.8 为源码构建版，GitHub Release 提供的 DMG 为 1.7.0。**
+当前源码分支是 `zx/daily-native`，已合并[上游 1.7.1](https://github.com/qixiaoyu27/Mac-Explorer/commit/68a4677df9f6ba7b54e947577ded3ebd932e9357)。Daily 以独立的应用标识构建，可保留此前 Daily 的偏好设置。**1.7.8 提供可直接安装的 DMG，也可从源码构建。**
 
 - **外置盘与 Mounty**。挂载后自动出现在侧栏「此电脑」下，右键可安全弹出。只读挂载会有提示。NTFS 读写能力由系统或 Mounty 等驱动提供。
 - **同卷移动与传输**。卷支持时直接移动文件。对 Mounty 挂载的 NTFS，支持无需复制内容的普通文件移动，并保护同名目标。复制和移动集中到同一传输窗口，每项都可查看进度和速度，也可单独取消。

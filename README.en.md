@@ -4,11 +4,11 @@
 
 A native Swift/AppKit file manager for macOS with familiar Windows 11 Explorer workflows.
 
-[Download the 1.7.0 DMG](https://github.com/XIANG-z25/Mac-Explorer/releases/download/v1.7.0/Mac-Explorer-Daily-1.7.0-mac-arm64.dmg) · [Release notes](https://github.com/XIANG-z25/Mac-Explorer/releases/tag/v1.7.0)
+[Download the 1.7.8 DMG](https://github.com/XIANG-z25/Mac-Explorer/releases/download/v1.7.8/Mac-Explorer-Daily-1.7.8-mac-arm64.dmg) · [Release notes](https://github.com/XIANG-z25/Mac-Explorer/releases/tag/v1.7.8)
 
 ## Daily 1.7.8 (build 2) vs. upstream 1.7.1
 
-The `zx/daily-native` branch merges [upstream 1.7.1](https://github.com/qixiaoyu27/Mac-Explorer/commit/68a4677df9f6ba7b54e947577ded3ebd932e9357). Daily uses its own app identifier and retains preferences from previous Daily installations. **Build 1.7.8 from source. The published DMG is 1.7.0.**
+The `zx/daily-native` branch merges [upstream 1.7.1](https://github.com/qixiaoyu27/Mac-Explorer/commit/68a4677df9f6ba7b54e947577ded3ebd932e9357). Daily uses its own app identifier and retains preferences from previous Daily installations. **Download the 1.7.8 DMG or build it from source.**
 
 - Mounted external drives, including Mounty volumes, appear under **This PC** and can be safely ejected from the sidebar. Read-only mounts are indicated. NTFS write access depends on the installed driver.
 - Same-volume moves avoid copying when supported, including regular files on Mounty NTFS, and protect existing destination files. Active copies and moves share one window with per-task progress, speed, and cancellation.
