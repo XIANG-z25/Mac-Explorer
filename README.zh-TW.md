@@ -6,7 +6,15 @@
 
 [下載 1.7.0 DMG](https://github.com/XIANG-z25/Mac-Explorer/releases/download/v1.7.0/Mac-Explorer-Daily-1.7.0-mac-arm64.dmg) · [版本說明](https://github.com/XIANG-z25/Mac-Explorer/releases/tag/v1.7.0)
 
-## 1.7.0 更新
+## 目前分支更新（1.7.6）
+
+GitHub Releases 提供 **1.7.0 DMG**。以下功能已納入 `zx/daily-native` 原始碼，可依[建置說明](native/README.md#构建和打开)自行建置 Daily。
+
+- 外接磁碟（含 Mounty 掛載的磁碟）會自動顯示在側邊欄，可按右鍵安全退出。NTFS 讀寫由 macOS 或已安裝的驅動程式提供。
+- 同一磁碟卷支援直接移動時，會直接重新命名。Mounty 掛載的 NTFS 也能直接移動一般檔案，並保護目的地的同名檔案。
+- 進行中的傳輸集中在同一視窗，每項都有進度、速度及取消按鈕。可從「視窗 → 傳輸檔案」重新開啟。
+
+## 1.7.0 已發行功能
 
 - 在分頁按右鍵即可複製分頁，新分頁會在右側開啟相同資料夾並保留選取項目。
 - 按住 `⌘` 點選網址列路徑中的資料夾，或透過右鍵選單，即可在新分頁開啟。切回原分頁可繼續瀏覽。

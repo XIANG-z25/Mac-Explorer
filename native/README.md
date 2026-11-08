@@ -2,21 +2,21 @@
 
 Swift + AppKit 的独立实现，最低 macOS 13，不依赖 Electron、Node.js 或 WebView。原生控件复现 Windows 11 文件资源管理器的工作流，并复用现有 Swift 文件图标服务、文档模板和图标资源。
 
-原生版由 `main` 分支维护，Electron 版保留在 `electron` 分支。原型最初基于 `4473c44`。本轮对齐基线是主工作区 `db820e2` 及其当前 1.1.0 开发改动，不是本工作树内保留的旧 Electron 源码。原生版本号见 `VERSION`；它有独立 Bundle ID 和偏好设置。1.1.0 起提供原生发布包，安装说明见[根目录 README](../README.md#下载与安装)。应用不替换 Finder，也不会自动启用系统默认项。
+本分支维护 **Mac Explorer Daily**。应用入口位于 `Sources/MacExplorerNative/`，文件与卷操作位于 `Sources/ExplorerCore/`，构建和检查脚本位于 `scripts/`。仓库根目录的 `electron/` 保留旧版源码和原生构建仍需的共享资源。
 
 ## 构建和打开
 
 在本工作树根目录执行，需要 macOS、Xcode Command Line Tools 和 Python 3：
 
 ```sh
-python3 -I native/scripts/build.py
-open 'native/output/Mac Explorer.app'
+python3 -I native/scripts/build.py --personal
+open 'native/output/personal/Mac Explorer Daily.app'
 ```
 
 指定文件夹：
 
 ```sh
-open -n 'native/output/Mac Explorer.app' --args --path "$HOME/Documents"
+open -n 'native/output/personal/Mac Explorer Daily.app' --args --path "$HOME/Documents"
 ```
 
 已有原型正在运行时使用独立测试构建：
@@ -26,7 +26,7 @@ python3 -I native/scripts/build.py --validation
 open 'native/output/validation/Mac Explorer.app'
 ```
 
-普通构建 Bundle ID 为 `local.macexplorer.native-prototype`；测试构建为 `local.macexplorer.native-validation`。构建只写入忽略提交的 `native/output/` 与 `native/.build/`，不安装应用。产物是本地 ad-hoc 签名，没有 Developer ID 签名或 Apple 公证。
+Daily 构建使用 `local.zx.macexplorer.daily`，版本由 `scripts/build.py --personal` 的配置决定。普通构建 Bundle ID 为 `local.macexplorer.native-prototype`；测试构建为 `local.macexplorer.native-validation`。构建只写入忽略提交的 `native/output/` 与 `native/.build/`，不安装应用。产物是本地 ad-hoc 签名，没有 Developer ID 签名或 Apple 公证。
 
 ## 功能实现
 
@@ -66,7 +66,7 @@ open 'native/output/validation/Mac Explorer.app'
 - 复制和跨卷移动使用系统复制，恢复并读回创建/修改日期；属性无法保留时提供重试、继续、跳过和取消。SMB 目标及不支持排他提交的卷均排他创建最终名称并经描述符复制；SMB 先刷入数据再写属性，避免暂存改名导致文件标识变化。传输中的目标副本可见；只有目标及来源复核通过后才清理来源，不覆盖已有目标，不增加应用层全文件哈希。取消或失败无法清理的本次副本会报告实际路径。
 - 跨卷复制/移动不是原子事务；网络断线、外部并发改写和操作间竞争无法只靠临时目录检查完成全部实机验收。
 
-复制/跨共享移动的窗口显示当前文件字节数和已确认字节速率，并单独显示属性处理、验证和提交阶段。同服务器跨共享主数据可使用独立 SMB 客户端的服务端复制；详见[实现与验收记录](../docs/SERVER_SIDE_TRANSFER.md)。每次操作完成时后台写入不含路径或凭据的阶段耗时报告，最多保留 20 份；验证版位于 `native/output/validation/transfer-logs/`，日常版位于 `~/Library/Caches/<Bundle ID>/transfer-logs/`。
+进行中的传输集中在「传输文件」窗口。每行显示当前文件、字节进度和确认速率，并提供单独的取消按钮。属性处理、验证和提交阶段也会显示在对应任务行。同服务器跨共享主数据可使用独立 SMB 客户端的服务端复制；详见[实现与验收记录](../docs/SERVER_SIDE_TRANSFER.md)。每次操作完成时后台写入不含路径或凭据的阶段耗时报告，最多保留 20 份；验证版位于 `native/output/validation/transfer-logs/`，日常版位于 `~/Library/Caches/<Bundle ID>/transfer-logs/`。
 
 ## 检查入口
 

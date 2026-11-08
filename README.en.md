@@ -6,7 +6,15 @@ A native Swift/AppKit file manager for macOS with familiar Windows 11 Explorer w
 
 [Download the 1.7.0 DMG](https://github.com/XIANG-z25/Mac-Explorer/releases/download/v1.7.0/Mac-Explorer-Daily-1.7.0-mac-arm64.dmg) · [Release notes](https://github.com/XIANG-z25/Mac-Explorer/releases/tag/v1.7.0)
 
-## What's new in 1.7.0
+## Current branch (1.7.6)
+
+GitHub Releases offers the **1.7.0 DMG**. The changes below are available in the `zx/daily-native` source. See the [Daily build instructions](native/README.md#构建和打开) to try them.
+
+- External drives, including Mounty mounts, appear in the sidebar. Right-click a drive to safely eject it. NTFS write access is provided by macOS or the installed driver.
+- Same-volume moves use a direct rename when supported. Regular files on Mounty NTFS can move without copying their contents, and existing destination files are protected.
+- Active transfers share one window, with progress, speed, and cancellation for each task. Reopen it from **Window → Transfer Files**.
+
+## What's included in the 1.7.0 release
 
 - Right-click a tab to duplicate its folder and selection in a tab next to it.
 - Command-click an address-bar breadcrumb, or use its context menu, to open that folder in a new tab. Switch back to resume browsing where you left off.
