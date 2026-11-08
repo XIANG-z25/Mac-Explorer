@@ -1,6 +1,14 @@
 import AppKit
 import ExplorerCore
 
+private final class LatestCheckPointerWindow: NSWindow {
+  var testPointer: NSPoint?
+  override var isKeyWindow: Bool { testPointer != nil || super.isKeyWindow }
+  override var mouseLocationOutsideOfEventStream: NSPoint {
+    testPointer ?? super.mouseLocationOutsideOfEventStream
+  }
+}
+
 @MainActor
 enum NativeLatestChecks {
   static func run(parent: NSWindow) async throws -> [String] {
@@ -103,7 +111,7 @@ enum NativeLatestChecks {
     defaults.set(true, forKey: "extensions")
     let first = BrowserController(initial: docs, defaults: defaults), second = BrowserController(initial: docs, defaults: defaults)
     first.home = home; second.home = home; first.testTrashDirectory = home.appendingPathComponent(".Trash"); second.testTrashDirectory = first.testTrashDirectory
-    let firstWindow = NSWindow(contentRect: NSRect(x: 60, y: 80, width: 980, height: 640), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+    let firstWindow = LatestCheckPointerWindow(contentRect: NSRect(x: 60, y: 80, width: 980, height: 640), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
     let secondWindow = NSWindow(contentRect: NSRect(x: 100, y: 120, width: 980, height: 640), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
     firstWindow.isReleasedWhenClosed = false; secondWindow.isReleasedWhenClosed = false
     firstWindow.contentViewController = first; secondWindow.contentViewController = second
@@ -127,16 +135,21 @@ enum NativeLatestChecks {
     try await until { !first.collection.visibleItems().isEmpty && !second.collection.visibleItems().isEmpty }
     func checkHover(_ resolve: () -> (NSView, ExplorerCheckbox)) throws {
       var (view, checkbox) = resolve()
+      let pointerWindow = view.window as? LatestCheckPointerWindow
+      defer { pointerWindow?.testPointer = nil }
       guard let event = NSEvent.enterExitEvent(with: .mouseEntered, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: view.window?.windowNumber ?? 0, context: nil, eventNumber: 0, trackingNumber: 0, userData: nil) else { throw NativeSmoke.Failure(description: "Cannot create checkbox hover event") }
+      pointerWindow?.testPointer = NSPoint(x: -1000, y: -1000)
       view.mouseExited(with: event)
       try expect(checkbox.isHidden == (checkbox.state != .on), "Only selected item checkboxes remain visible without hover")
       let frame = checkbox.frame
+      pointerWindow?.testPointer = view.convert(NSPoint(x: view.visibleRect.midX, y: view.visibleRect.midY), to: nil)
       view.mouseEntered(with: event)
       try expect(!checkbox.isHidden && checkbox.frame == frame, "Hover reveals the item checkbox without shifting layout")
       if checkbox.state == .on { checkbox.performClick(nil); (view, checkbox) = resolve() }
       checkbox.performClick(nil)
       (view, checkbox) = resolve()
       try expect(checkbox.state == .on, "Hovered checkbox still selects the item")
+      pointerWindow?.testPointer = NSPoint(x: -1000, y: -1000)
       view.mouseExited(with: event)
       try expect(!checkbox.isHidden && checkbox.state == .on, "Leaving keeps a checked checkbox visible and preserves selection")
       checkbox.state = .off
@@ -162,6 +175,7 @@ enum NativeLatestChecks {
     NotificationCenter.default.post(name: UserDefaults.didChangeNotification, object: defaults)
     try await until { [first, second].allSatisfy { !$0.showHidden && $0.extensions && !$0.checkboxes && $0.mode == .details && $0.entries.count == 1 } }
     try expect(true, "Reverting shared preferences refreshes both existing windows")
+    firstWindow.makeKeyAndOrderFront(nil)
     first.checkboxes = true; first.table.reloadData(); firstWindow.contentView?.layoutSubtreeIfNeeded()
     guard first.table.rowView(atRow: 0, makeIfNecessary: true) != nil, let cell = first.table.view(atColumn: 0, row: 0, makeIfNecessary: true) as? NameCell else { throw NativeSmoke.Failure(description: "Missing checkbox row") }
     cell.layoutSubtreeIfNeeded()

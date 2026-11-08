@@ -6,13 +6,17 @@ A native Swift/AppKit file manager for macOS with familiar Windows 11 Explorer w
 
 [Download the 1.7.0 DMG](https://github.com/XIANG-z25/Mac-Explorer/releases/download/v1.7.0/Mac-Explorer-Daily-1.7.0-mac-arm64.dmg) · [Release notes](https://github.com/XIANG-z25/Mac-Explorer/releases/tag/v1.7.0)
 
-## Current branch (1.7.6)
+## Daily 1.7.8 (build 2) vs. upstream 1.7.1
 
-GitHub Releases offers the **1.7.0 DMG**. The changes below are available in the `zx/daily-native` source. See the [Daily build instructions](native/README.md#构建和打开) to try them.
+The `zx/daily-native` branch merges [upstream 1.7.1](https://github.com/qixiaoyu27/Mac-Explorer/commit/68a4677df9f6ba7b54e947577ded3ebd932e9357). Daily uses its own app identifier and retains preferences from previous Daily installations. **Build 1.7.8 from source. The published DMG is 1.7.0.**
 
-- External drives, including Mounty mounts, appear in the sidebar. Right-click a drive to safely eject it. NTFS write access is provided by macOS or the installed driver.
-- Same-volume moves use a direct rename when supported. Regular files on Mounty NTFS can move without copying their contents, and existing destination files are protected.
-- Active transfers share one window, with progress, speed, and cancellation for each task. Reopen it from **Window → Transfer Files**.
+- Mounted external drives, including Mounty volumes, appear under **This PC** and can be safely ejected from the sidebar. Read-only mounts are indicated. NTFS write access depends on the installed driver.
+- Same-volume moves avoid copying when supported, including regular files on Mounty NTFS, and protect existing destination files. Active copies and moves share one window with per-task progress, speed, and cancellation.
+- Duplicate tabs, open breadcrumbs in new tabs, drag-select from blank space in Details rows, regroup immediately when switching icon views, and hover to see full filenames beside the pointer.
+- Use search filters without a keyword, and return to the folder listing when the last filter is cleared. The sidebar merges duplicate entries for the same cloud folder. Their clients manage syncing and offline availability.
+- Large selections avoid repeated volume checks. The Details pane reuses its text preview to reduce layout allocations when switching files.
+
+From the repository root, run `python3 -I native/scripts/build.py --personal` and copy `native/output/personal/Mac Explorer Daily.app` to Applications. See the [native build guide](native/README.md#构建和打开).
 
 ## What's included in the 1.7.0 release
 

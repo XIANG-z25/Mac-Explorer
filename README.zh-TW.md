@@ -6,13 +6,17 @@
 
 [下載 1.7.0 DMG](https://github.com/XIANG-z25/Mac-Explorer/releases/download/v1.7.0/Mac-Explorer-Daily-1.7.0-mac-arm64.dmg) · [版本說明](https://github.com/XIANG-z25/Mac-Explorer/releases/tag/v1.7.0)
 
-## 目前分支更新（1.7.6）
+## Daily 1.7.8（組建 2）與上游 1.7.1 的差異
 
-GitHub Releases 提供 **1.7.0 DMG**。以下功能已納入 `zx/daily-native` 原始碼，可依[建置說明](native/README.md#构建和打开)自行建置 Daily。
+`zx/daily-native` 分支已合併[上游 1.7.1](https://github.com/qixiaoyu27/Mac-Explorer/commit/68a4677df9f6ba7b54e947577ded3ebd932e9357)。Daily 使用獨立的應用程式識別碼，保留先前 Daily 的偏好設定。**1.7.8 請從原始碼建置。GitHub Release 提供的 DMG 為 1.7.0。**
 
-- 外接磁碟（含 Mounty 掛載的磁碟）會自動顯示在側邊欄，可按右鍵安全退出。NTFS 讀寫由 macOS 或已安裝的驅動程式提供。
-- 同一磁碟卷支援直接移動時，會直接重新命名。Mounty 掛載的 NTFS 也能直接移動一般檔案，並保護目的地的同名檔案。
-- 進行中的傳輸集中在同一視窗，每項都有進度、速度及取消按鈕。可從「視窗 → 傳輸檔案」重新開啟。
+- 掛載後的外接磁碟（含 Mounty）會顯示在側邊欄「此電腦」，可按右鍵安全退出。唯讀掛載會顯示提示，NTFS 寫入由已安裝的驅動程式提供。
+- 磁碟卷支援時直接移動檔案，Mounty NTFS 上的一般檔案也可無須複製內容即可移動，並保護目的地的同名檔案。複製和移動集中在同一視窗，可分別查看進度、速度或取消。
+- 支援複製分頁、從位址列在新分頁開啟資料夾、在詳細資料列的留白處拖曳框選、切換圖示檢視時立即重新分組，以及在指標旁顯示完整檔名。
+- 修正未輸入關鍵字時的篩選，以及清除最後一個篩選條件後返回資料夾清單的行為。側邊欄會合併指向相同位置的雲端硬碟入口。同步與離線保留由各自的用戶端管理。
+- 大量選取時減少重複的磁碟卷檢查。詳細資料面板會重複使用文字預覽，減少切換檔案時的排版配置。
+
+在儲存庫根目錄執行 `python3 -I native/scripts/build.py --personal`，再將 `native/output/personal/Mac Explorer Daily.app` 拖入「應用程式」。詳見[原生版開發文件](native/README.md#构建和打开)。
 
 ## 1.7.0 已發行功能
 

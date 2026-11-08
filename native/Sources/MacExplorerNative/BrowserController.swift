@@ -57,6 +57,7 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
   var groupNewestFirst = true, groupFoldersFirst = true
   private(set) var groups: [EntryGroup] = []
   private(set) var displayRows: [ExplorerDisplayRow] = []
+  private var visibleRowByPath: [String: Int] = [:]
   private var collapsedGroups = Set<String>()
   private var groupingSource: [FileEntry]?
   private var groupingSignature = ""
@@ -170,6 +171,7 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
   private var paneReadEntry: FileEntry?
   private var paneReadTask: Task<NativeFilePreview, Error>?
   private var panePreview: (FileEntry, NativeFilePreview)?
+  private var paneTextView: (scroll: NSScrollView, text: NSTextView)?
 
   init(initial: URL, defaults: UserDefaults) {
     self.defaults = defaults; places = QuickAccessState(defaults: defaults); tabs = [BrowserTab(history: [initial])]
@@ -894,6 +896,7 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
     loadTask?.cancel(); queryTask?.cancel(); searchTask?.cancel()
     vcsGeneration += 1; vcsTask?.cancel(); vcsPendingRefresh = nil
     paneReadTask?.cancel(); paneEntry = nil; panePreview = nil
+    paneTextView?.scroll.removeFromSuperview(); paneTextView = nil
     inputNavigation?.close(); inputNavigation = nil; preferencesWork?.cancel(); vcsTimer?.invalidate(); vcsTimer = nil; groupingTimer?.invalidate(); groupingTimer = nil
     if let focusObserver { NotificationCenter.default.removeObserver(focusObserver); self.focusObserver = nil }
     removeMountObservers()
@@ -929,7 +932,7 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
     // Hidden views can still receive layout callbacks after a directory or layout change.
     rebuildGroups()
     table.reloadData(); collection.reloadData()
-    let selected = displayRows.indices.filter { row in entryIndex(at: row).map { selectedPaths.contains(entries[$0].id) } ?? false }
+    let selected = selectedRows()
     table.selectRowIndexes(IndexSet(selected), byExtendingSelection: false)
     collection.selectionIndexPaths = mode == .details || loading ? [] : Set(selected.map { IndexPath(item: $0, section: 0) })
     syncingSelection = false
@@ -958,12 +961,14 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
     view.window?.title = "\(locationLabel(directory)) — Mac Explorer"
   }
   private func updateStatus() {
-    let chosen = selectedEntries(), total = chosen.filter { !$0.isDirectory }.reduce(Int64(0)) { $0 + $1.size }
+    let chosen = selectedEntries()
+    let total = chosen.reduce(Int64(0)) { $0 + ($1.isDirectory ? 0 : $1.size) }
+    let network = containsNetworkEntries(chosen)
     status.stringValue = loading ? NL("正在读取…") : NL("{0} 个项目", entries.count) + (chosen.isEmpty ? "" : NL("     已选择 {0} 个项目", chosen.count)) + (total > 0 ? "     \(ExplorerFormat.size(total))" : "") + (message.isEmpty ? (showHidden ? NL("     显示隐藏的项目") : "") : "     \(message)")
     commands["cut"]?.isEnabled = !chosen.isEmpty && !busy && !viewingTrash; commands["copy"]?.isEnabled = !chosen.isEmpty && !busy
     commands["paste"]?.isEnabled = (!clipboard.isEmpty || filePasteboard.canReadObject(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true])) && !busy && writable
-    commands["rename"]?.isEnabled = chosen.count == 1 && !busy && !viewingTrash; commands["share"]?.isEnabled = !chosen.isEmpty && !busy; commands["trash"]?.isEnabled = !chosen.isEmpty && !busy && !viewingTrash && !networkDeletionHint
-    commands["trash"]?.toolTip = networkDeletionHint ? NL("暂不支持删除网络项目。") : deletionTitle + " " + shortcutHint("trash")
+    commands["rename"]?.isEnabled = chosen.count == 1 && !busy && !viewingTrash; commands["share"]?.isEnabled = !chosen.isEmpty && !busy; commands["trash"]?.isEnabled = !chosen.isEmpty && !busy && !viewingTrash && !network
+    commands["trash"]?.toolTip = network ? NL("暂不支持删除网络项目。") : NL("移到回收站") + " " + shortcutHint("trash")
     commands["airdrop"]?.isEnabled = !chosen.isEmpty && !busy; commands["terminal"]?.isEnabled = directory.isFileURL && !busy
     commands["undo"]?.isEnabled = !undoChanges.isEmpty && !busy; commands["refresh"]?.isEnabled = !busy
     commands["batchRename"]?.isEnabled = selectedPaths.count >= 2 && !busy && !viewingTrash
@@ -1046,7 +1051,20 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
     detailColumns = DetailColumns(propertyList: saved["columns"]) ?? DetailColumns(propertyList: global["columns"]) ?? DetailColumns()
     configureCollectionLayout()
   }
-  func selectedEntries() -> [FileEntry] { displayRows.compactMap { $0.entry }.map { entries[$0] }.filter { selectedPaths.contains($0.id) } }
+  private func selectedRows() -> [Int] {
+    let paths = selectedPaths
+    guard !paths.isEmpty else { return [] }
+    if paths.count < max(2, displayRows.count / 8) {
+      return paths.compactMap { visibleRowByPath[$0] }.sorted()
+    }
+    return displayRows.indices.filter { row in
+      guard let index = displayRows[row].entry else { return false }
+      return paths.contains(entries[index].id)
+    }
+  }
+  func selectedEntries() -> [FileEntry] {
+    selectedRows().compactMap { displayRows[$0].entry.map { entries[$0] } }
+  }
   private func displayName(_ entry: FileEntry) -> String { if entry.isPackage { return entry.url.deletingPathExtension().lastPathComponent }; return extensions || entry.isDirectory || entry.url.pathExtension.isEmpty ? entry.name : entry.url.deletingPathExtension().lastPathComponent }
 
   func entryIndex(at row: Int) -> Int? { displayRows.indices.contains(row) ? displayRows[row].entry : nil }
@@ -1074,6 +1092,10 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
       }
     }
     collectionLayout.groupHeaderRows = Set(displayRows.indices.filter { displayRows[$0].group != nil })
+    visibleRowByPath.removeAll(keepingCapacity: true)
+    for (row, item) in displayRows.enumerated() {
+      if let entry = item.entry { visibleRowByPath[entries[entry].id] = row }
+    }
     collectionLayout.invalidateLayout()
   }
   func setGrouping(_ mode: EntryGroupMode) {
@@ -1348,7 +1370,7 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
     return [ExplorerMenuItem(title: NL("打开文件夹…"), icon: "folder", action: { [weak self] in self?.chooseDirectory() }), ExplorerMenuItem(title: pinned ? NL("从快速访问取消固定") : NL("固定到快速访问"), icon: "pin", enabled: target != nil, action: { [weak self] in if let target { self?.togglePin(target) } }), ExplorerMenuItem(title: NL("全选"), shortcut: shortcutHint("select-all"), action: { [weak self] in self?.selectAllFiles() }), ExplorerMenuItem(title: NL("取消选择"), action: { [weak self] in self?.selectedPaths = []; self?.render() }), ExplorerMenuItem(title: NL("撤销"), icon: "undo", enabled: !undoChanges.isEmpty && !busy, divider: true, shortcut: shortcutHint("undo"), action: { [weak self] in self?.undoFiles() }), ExplorerMenuItem(title: NL("重做"), enabled: !redoChanges.isEmpty && !busy, shortcut: shortcutHint("redo"), action: { [weak self] in self?.redoFiles() }), ExplorerMenuItem(title: NL("设置…"), icon: "settings", divider: true, action: { [weak self] in self?.showSettings() })]
   }
   func contextItems() -> [ExplorerMenuItem] {
-    let chosen = selectedEntries(), first = selectedEntries().first
+    let chosen = selectedEntries(), first = chosen.first
     let canPaste = !busy && writable && (!clipboard.isEmpty || filePasteboard.canReadObject(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]))
     let refresh = ExplorerMenuItem(title: NL("刷新"), icon: "refresh", shortcut: shortcutHint("refresh"), action: { [weak self] in self?.executeAction("refresh") })
     let hidden = ExplorerMenuItem(title: showHidden ? NL("不显示隐藏项目") : NL("显示隐藏的项目"), checked: showHidden, action: { [weak self] in self?.toggleHidden() })
@@ -1365,6 +1387,7 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
     }
     var items: [ExplorerMenuItem] = []
     if let first {
+      let network = containsNetworkEntries(chosen)
       items = [ExplorerMenuItem(title: NL("打开"), icon: "folder", shortcut: shortcutHint("open"), action: { [weak self] in self?.openSelected() }), openWithMenu(chosen.map(\.url))]
       if !first.isDirectory {
         items.append(ExplorerMenuItem(title: NL("使用文本编辑"), icon: "document", enabled: chosen.allSatisfy { !$0.isDirectory }, action: { [weak self] in self?.openAsText(chosen.map(\.url)) }))
@@ -1386,7 +1409,7 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
         ExplorerMenuItem(title: NL("重命名"), icon: "rename", enabled: chosen.count == 1 && !busy, shortcut: shortcutHint("rename"), action: { [weak self] in self?.renameSelected() }),
         ExplorerMenuItem(title: NL("批量重命名"), icon: "rename", enabled: chosen.count >= 2 && !busy, action: { [weak self] in self?.batchRenameSelected() }),
         ExplorerMenuItem(title: NL("共享"), icon: "share", action: { [weak self] in self?.shareSelected() }),
-        ExplorerMenuItem(title: deletionTitle, icon: "trash", enabled: !busy && !networkDeletionHint, shortcut: shortcutHint("trash"), action: { [weak self] in self?.trashSelected() })]
+        ExplorerMenuItem(title: network ? NL("删除") : NL("移到回收站"), icon: "trash", enabled: !busy && !network, shortcut: shortcutHint("trash"), action: { [weak self] in self?.trashSelected() })]
       if first.isDirectory, !isCloudLocation(first.url) {
         items.append(ExplorerMenuItem(title: pinnedPaths.contains(first.url.path) ? NL("从快速访问取消固定") : NL("固定到快速访问"), icon: "pin", divider: true, action: { [weak self] in self?.togglePin(first.url) }))
       }
@@ -1419,7 +1442,13 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
     let selected = selectedEntries()
     paneEntry = !stopped && paneMode == "details" && selected.count == 1 && NativeFilePreview.supports(selected[0]) ? selected[0] : nil
     if paneReadEntry != paneEntry { paneReadTask?.cancel() }
-    if panePreview?.0 != paneEntry { panePreview = nil }
+    if panePreview?.0 != paneEntry {
+      panePreview = nil
+      if let preview = paneTextView, !preview.text.string.isEmpty {
+        preview.text.string = ""
+        preview.text.scrollToBeginningOfDocument(nil)
+      }
+    }
     detailsPreview?.previewItem = nil; detailsPreview?.removeFromSuperview(); detailsPreview = nil
     pane.subviews.forEach { $0.removeFromSuperview() }; paneBody.subviews.forEach { $0.removeFromSuperview() }
     guard !paneMode.isEmpty else { return }
@@ -1473,8 +1502,17 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
   }
   private func showPaneText(_ result: NativeFilePreview) {
     guard let text = result.text else { return }
-    let preview = NSTextView(); preview.string = text; preview.isEditable = false; preview.font = .monospacedSystemFont(ofSize: 11, weight: .regular); preview.textColor = ExplorerPalette.text; preview.backgroundColor = ExplorerPalette.surface
-    let scroll = NSScrollView(); scroll.documentView = preview; scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true; scroll.identifier = NSUserInterfaceItemIdentifier("text-preview"); paneBody.addSubview(scroll)
+    if paneTextView == nil {
+      // A plain-text preview can reuse one layout stack for the lifetime of this browser.
+      let preview = NSTextView(usingTextLayoutManager: false)
+      preview.isEditable = false; preview.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+      let scroll = NSScrollView(); scroll.documentView = preview; scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true; scroll.identifier = NSUserInterfaceItemIdentifier("text-preview")
+      paneTextView = (scroll, preview)
+    }
+    guard let preview = paneTextView else { return }
+    if preview.text.string != text { preview.text.string = text; preview.text.scrollToBeginningOfDocument(nil) }
+    preview.text.textColor = ExplorerPalette.text; preview.text.backgroundColor = ExplorerPalette.surface
+    paneBody.addSubview(preview.scroll)
     let heading = label(NL("内容预览"), size: 12); heading.identifier = NSUserInterfaceItemIdentifier("text-heading"); paneBody.addSubview(heading)
     if result.truncated { let note = label(NL("仅显示前 16 KB"), size: 11, color: ExplorerPalette.secondary); note.identifier = NSUserInterfaceItemIdentifier("text-limit"); paneBody.addSubview(note) }
   }
@@ -1655,12 +1693,15 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
     }) { control in FileActions.transfer(sources, to: target, move: move, control: control) }
   }
   // Cached mount classification keeps menu/selection updates free of network I/O.
-  var deletionNetworkLocation: (URL) -> Bool? = NativeFileFailure.networkLocation
+  var deletionNetworkLocation: ((URL) -> Bool?)?
 #if EXPLORER_DELETION_TESTS
   var prepareDeletionItems: @Sendable ([URL]) throws -> [PreparedDeletion] = PreparedDeletion.prepare
 #endif
-  private var networkDeletionHint: Bool { selectedEntries().contains { deletionNetworkLocation($0.url) == true } }
-  private var deletionTitle: String { networkDeletionHint ? NL("删除") : NL("移到回收站") }
+  private func containsNetworkEntries(_ entries: [FileEntry]) -> Bool {
+    guard !entries.isEmpty else { return false }
+    let classify = deletionNetworkLocation ?? NativeFileFailure.networkLocationSnapshot()
+    return entries.contains { classify($0.url) == true }
+  }
   private func trashSelected() {
     let sources = selectedEntries().map(\.url)
     guard !busy, !sources.isEmpty, !viewingTrash, let window = view.window else { return }
