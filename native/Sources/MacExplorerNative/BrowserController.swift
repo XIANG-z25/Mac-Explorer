@@ -33,6 +33,9 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
   private var reconnectTask: Task<Void, Never>?
   private var groupingDay = Calendar.current.startOfDay(for: Date())
   private var focusObserver: NSObjectProtocol?
+  private var mountObservers: [NSObjectProtocol] = []
+  private var sidebarMounts: [String: UInt32] = [:]
+  private var readOnlyVolume = false
   var onLanguageChange: ((String) -> Void)?
   var onDetachTab: ((BrowserTab, NSPoint) -> Bool)?
   private(set) var tabs: [BrowserTab]
@@ -45,7 +48,7 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
   private var pendingLocationState: BrowserLocationState?
   var directory: URL { tabs[activeTab].directory }
   private var viewingTrash: Bool { directory.absoluteString == "explorer://trash" || directory.isFileURL && (directory.path == home.appendingPathComponent(".Trash").path || directory.path.hasPrefix(home.appendingPathComponent(".Trash").path + "/") || directory.pathComponents.contains(".Trashes")) }
-  private var writable: Bool { directory.isFileURL && !searchActive && !viewingTrash }
+  private var writable: Bool { directory.isFileURL && !searchActive && !viewingTrash && !readOnlyVolume }
   var selectedPaths: Set<String> { get { tabs[activeTab].selectedPaths } set { tabs[activeTab].selectedPaths = newValue } }
   var showHidden = false, ascending = true, compact = false, checkboxes = false, extensions = true, navigationPane = true
   var groupMode: EntryGroupMode = .none
@@ -244,7 +247,9 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
     rebuildTabs(); rebuildSidebar(); layoutChrome(); updateMode(persist: false)
     keyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .scrollWheel]) { [weak self] event in guard let self else { return event }; return self.handleKey(event) }
     vcsTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
-      guard let self, self.vcsStatus != nil, self.view.window?.isKeyWindow == true, !self.automaticRefreshBlocked else { return }; self.refreshVCS()
+      guard let self, self.view.window?.isVisible == true else { return }
+      self.refreshMountedDrives()
+      if self.vcsStatus != nil, self.view.window?.isKeyWindow == true, !self.automaticRefreshBlocked { self.refreshVCS() }
     }
     groupingTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
       guard let self, !self.stopped, self.groupMode == .modified || self.groupMode == .created else { return }
@@ -253,8 +258,15 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
     groupingTimer?.tolerance = 10
     focusObserver = NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification, object: nil, queue: .main) { [weak self] note in
       guard let self, note.object as? NSWindow === self.view.window else { return }
+      self.refreshMountedDrives()
       self.refreshVisibleIcons()
       if !self.automaticRefreshBlocked { self.refreshVCS(force: true) }
+    }
+    let workspace = NSWorkspace.shared.notificationCenter
+    for event in [NSWorkspace.didMountNotification, NSWorkspace.didUnmountNotification, NSWorkspace.didRenameVolumeNotification] {
+      mountObservers.append(workspace.addObserver(forName: event, object: nil, queue: .main) { [weak self] _ in
+        self?.refreshMountedDrives(force: true)
+      })
     }
     paletteObserver = NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in self?.view.needsLayout = true }
   }
@@ -554,7 +566,15 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
     let chosen = selectedEntries()
     return chosen.count == 1 && chosen[0].isDirectory && !chosen[0].isPackage && !viewingTrash && !isCloudLocation(chosen[0].url) ? chosen[0].url : nil
   }
+  private func refreshMountedDrives(force: Bool = false) {
+    guard !stopped, force || sidebarMounts != NativeVolumes.sidebarMounts() else { return }
+    readOnlyVolume = NativeVolumes.isReadOnly(directory)
+    rebuildSidebar()
+    specialView.refreshMountedVolumes()
+    updateStatus()
+  }
   private func rebuildSidebar() {
+    sidebarMounts = NativeVolumes.sidebarMounts()
     refreshProviderCloudDrives()
     let scroll = sidebarScroll.contentView.bounds.origin
     sidebarDocument.subviews.forEach { $0.removeFromSuperview() }; sidebarRows = []; placeRows = []
@@ -593,7 +613,7 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
     row(NL("此电脑"), URL(string: "explorer://computer")!, "computer")
     sidebarRows.last?.1.expanded = true; sidebarRows.last?.1.onExpand = nil
     row((try? URL(fileURLWithPath: "/").resourceValues(forKeys: [.volumeNameKey]).volumeName) ?? "Macintosh HD", URL(fileURLWithPath: "/"), "drive", level: 1)
-    for volume in FileManager.default.mountedVolumeURLs(includingResourceValuesForKeys: nil, options: [.skipHiddenVolumes]) ?? [] where volume.path.hasPrefix("/Volumes/") && !providerCloudDrives.contains(where: { $0.url == volume.standardizedFileURL || $0.sourceURLs.contains(volume.standardizedFileURL) }) { row(volume.lastPathComponent, volume, "drive", level: 1) }
+    for volume in NativeVolumes.visibleURLs() ?? [] where volume.path != "/" && (volume.path.hasPrefix("/Volumes/") || sidebarMounts[volume.path] != nil) && !providerCloudDrives.contains(where: { $0.url == volume.standardizedFileURL || $0.sourceURLs.contains(volume.standardizedFileURL) }) { row(volume.lastPathComponent, volume, "drive", level: 1) }
     if let cloudDrive { row("iCloud Drive", cloudDrive, "cloud") }
     for drive in providerCloudDrives { row(drive.name, drive.url, "cloud") }
     row(NL("回收站"), URL(string: "explorer://trash")!, "trash")
@@ -611,8 +631,8 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
         items.append(ExplorerMenuItem(title: pinnedPaths.contains(url.path) ? NL("从快速访问取消固定") : NL("固定到快速访问"), icon: "pin", action: { [weak self] in self?.togglePin(url) }))
       }
     }
-    if url.path.hasPrefix("/Volumes/"), (try? url.resourceValues(forKeys: [.volumeIsEjectableKey]).volumeIsEjectable) == true {
-      items.append(ExplorerMenuItem(title: NL("推出"), icon: "eject", enabled: !busy, divider: true, action: { [weak self] in self?.ejectVolume(url) }))
+    if NativeVolumes.canEject(url) {
+      items.append(ExplorerMenuItem(title: NL("安全弹出"), icon: "eject", enabled: !busy, divider: true, action: { [weak self] in self?.ejectVolume(url) }))
     }
     ExplorerMenu.show(items, at: window.convertPoint(toScreen: event.locationInWindow), owner: window)
   }
@@ -776,6 +796,7 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
     ExplorerMenu.dismiss(); generation += 1; queryGeneration += 1; loadTask?.cancel(); queryTask?.cancel(); searchTask?.cancel()
     vcsStatus = nil
     let token = generation, target = directory; startedAt = Date(); loading = true; lastError = nil; snapshot = nil; entries = []
+    readOnlyVolume = NativeVolumes.isReadOnly(target)
     addressBar.homeDirectory = home
     addressBar.setDirectory(target, title: target.isFileURL ? nil : locationLabel(target)); addressBar.showHidden = showHidden; search.placeholderString = NL("在{0}中搜索", locationLabel(target)); search.isEnabled = target.host != "airdrop"; searchBox.update()
     backButton.isEnabled = tabs[activeTab].index > 0; forwardButton.isEnabled = tabs[activeTab].index + 1 < tabs[activeTab].history.count; upButton.isEnabled = target.path != "/"
@@ -868,6 +889,7 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
     loadTask?.cancel(); queryTask?.cancel(); searchTask?.cancel()
     inputNavigation?.close(); inputNavigation = nil; preferencesWork?.cancel(); vcsTimer?.invalidate(); vcsTimer = nil; groupingTimer?.invalidate(); groupingTimer = nil
     if let focusObserver { NotificationCenter.default.removeObserver(focusObserver); self.focusObserver = nil }
+    removeMountObservers()
     if let preferencesObserver { NotificationCenter.default.removeObserver(preferencesObserver); self.preferencesObserver = nil }
     if let keyMonitor { NSEvent.removeMonitor(keyMonitor); self.keyMonitor = nil }
     if let paletteObserver { NotificationCenter.default.removeObserver(paletteObserver); self.paletteObserver = nil }
@@ -939,7 +961,8 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
     commands["undo"]?.isEnabled = !undoChanges.isEmpty && !busy; commands["refresh"]?.isEnabled = !busy
     commands["batchRename"]?.isEnabled = selectedPaths.count >= 2 && !busy && !viewingTrash
     if let vcsStatus, vcsStatus.error == nil { status.stringValue += "     \(vcsStatus.kind == .git ? "Git" : "SVN") · \(vcsStatus.branch)" }
-    if !directory.isFileURL { status.stringValue = locationLabel(directory) }
+    if !directory.isFileURL { status.stringValue = locationLabel(directory) + (message.isEmpty ? "" : "     \(message)") }
+    if readOnlyVolume { status.stringValue += "     " + NL("磁盘以只读方式挂载") }
     newButton.isEnabled = !busy && writable; detailViewButton.active = mode == .details; iconViewButton.active = mode == .icons; previewButton.active = paneMode == "preview"
   }
   private func configureCollectionLayout() {
@@ -1745,7 +1768,13 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
       self.operationError = result.errors.isEmpty ? nil : result.errors.joined(separator: "\n")
       self.busy = false; self.message = result.errors.isEmpty ? (result.transfers.contains { $0.method == .serverSideCopy } ? NL("已完成（服务端复制）") : NL("已完成")) : result.errors.prefix(2).joined(separator: "；")
       if selectResults, let index = self.tabs.firstIndex(where: { $0.id == origin }), self.tabs[index].directory == originDirectory { self.tabs[index].selectedPaths = Set(result.succeeded.map(\.path)) }
-      if self.tabs[self.activeTab].id == origin && self.directory == originDirectory { self.reload() } else { self.updateStatus() }
+      let activeAffected = result.changes.contains { change in
+        [change.source, change.destination].compactMap { $0 }.contains {
+          self.sameLocation($0.deletingLastPathComponent(), self.directory)
+        }
+      }
+      if (self.tabs[self.activeTab].id == origin && self.directory == originDirectory) || activeAffected { self.reload() }
+      else { self.updateStatus() }
     }
   }
   private func sendAirDrop() { let urls = selectedEntries().map(\.url); guard !urls.isEmpty else { return }; NSSharingService(named: .sendViaAirDrop)?.perform(withItems: urls) }
@@ -1796,9 +1825,25 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
   }
   private func ejectVolume(_ url: URL) {
     guard !busy else { return }
+    if directory.isFileURL, directory.path == url.path || directory.path.hasPrefix(url.path + "/") {
+      navigate(to: URL(string: "explorer://computer")!)
+    }
+    busy = true
+    message = NL("正在推出“{0}”…", url.lastPathComponent)
+    updateStatus()
     Task { @MainActor [weak self] in
-      do { _ = try await Task.detached { try NativeVolumes.eject(url) }.value; self?.rebuildSidebar(); if self?.directory == url { self?.navigate(to: URL(string: "explorer://computer")!) } }
-      catch { self?.operationError = error.localizedDescription; self?.render() }
+      do {
+        _ = try await Task.detached(priority: .userInitiated) { try NativeVolumes.eject(url) }.value
+        self?.busy = false
+        self?.message = NL("已推出“{0}”", url.lastPathComponent)
+        self?.refreshMountedDrives(force: true)
+      } catch {
+        guard let self else { return }
+        self.busy = false
+        self.message = ""
+        self.operationError = error.localizedDescription
+        self.render()
+      }
     }
   }
   private func showProperties() {
@@ -2014,7 +2059,12 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
     needsFullDiskAccess = failure.offersPrivacySettings
     return failure.message
   }
-  deinit { reconnectTask?.cancel(); groupingTimer?.invalidate(); vcsTimer?.invalidate(); if let focusObserver { NotificationCenter.default.removeObserver(focusObserver) }; preferencesWork?.cancel(); if let preferencesObserver { NotificationCenter.default.removeObserver(preferencesObserver) }; loadTask?.cancel(); queryTask?.cancel(); searchTask?.cancel(); automaticRead?.cancel(); refreshWork?.cancel(); if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }; if let paletteObserver { NotificationCenter.default.removeObserver(paletteObserver) }; if let settingsObserver { NotificationCenter.default.removeObserver(settingsObserver) } }
+  private func removeMountObservers() {
+    let workspace = NSWorkspace.shared.notificationCenter
+    mountObservers.forEach(workspace.removeObserver)
+    mountObservers.removeAll()
+  }
+  deinit { removeMountObservers(); reconnectTask?.cancel(); groupingTimer?.invalidate(); vcsTimer?.invalidate(); if let focusObserver { NotificationCenter.default.removeObserver(focusObserver) }; preferencesWork?.cancel(); if let preferencesObserver { NotificationCenter.default.removeObserver(preferencesObserver) }; loadTask?.cancel(); queryTask?.cancel(); searchTask?.cancel(); automaticRead?.cancel(); refreshWork?.cancel(); if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }; if let paletteObserver { NotificationCenter.default.removeObserver(paletteObserver) }; if let settingsObserver { NotificationCenter.default.removeObserver(settingsObserver) } }
 }
 
 

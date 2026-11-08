@@ -14,6 +14,38 @@ enum NativeSmoke {
       checks.append(name)
     }
     do {
+      if ProcessInfo.processInfo.arguments.contains("--smoke-transfer-window") {
+        checks += try await NativeTransferPanelChecks.run()
+        try write(["passed": true, "checks": checks], to: report); NSApp.terminate(nil); return
+      }
+      let mountedReadOnly = ProcessInfo.processInfo.arguments.contains("--smoke-mounted-readonly")
+      if mountedReadOnly || ProcessInfo.processInfo.arguments.contains("--smoke-mounted-writable") {
+        func row() -> ExplorerSidebarRow? {
+          browser.sidebarDocument.subviews.compactMap { $0 as? ExplorerSidebarRow }.first { $0.toolTip == browser.directory.path }
+        }
+        let initialRow = row()
+        try expect(initialRow != nil, "The mounted volume is listed in the sidebar")
+        NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.didMountNotification, object: NSWorkspace.shared)
+        try expect(row() != nil && row() !== initialRow, "A mount notification refreshes the sidebar immediately")
+        try expect(browser.status.stringValue.contains(NL("磁盘以只读方式挂载")) == mountedReadOnly &&
+          browser.newButton.isEnabled != mountedReadOnly, "The mounted volume uses the correct write controls")
+        let volumePath = browser.directory.path
+        let volumes = try await Task.detached { try NativeVolumes.list() }.value
+        try expect(volumes.contains { $0.path == volumePath }, "The volume also appears in This PC")
+        if ProcessInfo.processInfo.arguments.contains("--smoke-eject-menu") {
+          guard let drive = row(), let event = NSEvent.mouseEvent(with: .rightMouseDown, location: drive.convert(NSPoint(x: 10, y: 10), to: nil), modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1) else {
+            throw Failure(description: "Missing sidebar drive")
+          }
+          drive.onContext?(event)
+          func containsEject(_ view: NSView) -> Bool {
+            view.accessibilityLabel() == NL("安全弹出") || view.subviews.contains(where: containsEject)
+          }
+          try expect((window.childWindows ?? []).compactMap(\.contentView).contains(where: containsEject), "The sidebar drive offers Safely Eject")
+          ExplorerMenu.dismiss()
+          try expect(try NativeVolumes.ejectable(browser.directory, among: volumes).path == volumePath, "The exact mount is a valid eject target")
+        }
+        try write(["passed": true, "checks": checks], to: report); NSApp.terminate(nil); return
+      }
       if ProcessInfo.processInfo.arguments.contains("--smoke-address-tabs") {
         checks += try await NativeAddressTabChecks.run(source: browser)
         try write(["passed": true, "checks": checks], to: report); NSApp.terminate(nil); return

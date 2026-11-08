@@ -1,10 +1,99 @@
 import AppKit
 import ExplorerCore
 
-/// A window-local transfer dialog; the main interface and its settings stay unchanged.
 @MainActor
-final class NativeTransferPanel: NSObject, NSWindowDelegate {
-  let window: NSPanel
+final class NativeTransferWindow: NSObject, NSWindowDelegate {
+  static let shared = NativeTransferWindow()
+  let window = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 460, height: 108), styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
+  private let scroll = NSScrollView()
+  private let document = TransferRows()
+  private var rows: [NativeTransferPanel] = []
+  private var waiting: [NativeTransferPanel] = []
+  private weak var showingAlert: NativeTransferPanel?
+
+  private override init() {
+    super.init()
+    window.title = NL("传输文件")
+    window.isReleasedWhenClosed = false
+    window.hidesOnDeactivate = false
+    window.delegate = self
+    scroll.documentView = document
+    scroll.autohidesScrollers = true
+    window.contentView = scroll
+    window.center()
+  }
+
+  func add(_ row: NativeTransferPanel) {
+    rows.append(row)
+    document.addSubview(row.content)
+    layout()
+  }
+
+  func remove(_ row: NativeTransferPanel) {
+    rows.removeAll { $0 === row }
+    row.content.removeFromSuperview()
+    if rows.isEmpty { window.orderOut(nil) }
+    layout()
+  }
+
+  private func layout() {
+    let rowHeight: CGFloat = 108
+    let height = rowHeight * CGFloat(max(1, rows.count))
+    let origin = window.frame.origin
+    let top = window.frame.maxY
+    window.setContentSize(NSSize(width: 460, height: min(height, 432)))
+    window.setFrameOrigin(NSPoint(x: origin.x, y: top - window.frame.height))
+    scroll.hasVerticalScroller = height > 432
+    document.frame.size = NSSize(width: 440, height: height)
+    for (index, row) in rows.enumerated() {
+      row.content.frame = NSRect(x: 0, y: CGFloat(index) * rowHeight, width: 440, height: rowHeight)
+    }
+  }
+
+  func show() {
+    if !rows.isEmpty { window.makeKeyAndOrderFront(nil) }
+  }
+
+  func windowShouldClose(_ sender: NSWindow) -> Bool {
+    window.orderOut(nil)
+    return false
+  }
+
+  func enqueueAlert(for row: NativeTransferPanel) {
+    waiting.append(row)
+    showNextAlert()
+  }
+
+  func dismissAlert(for row: NativeTransferPanel, alert: NSAlert, response: NSApplication.ModalResponse) {
+    waiting.removeAll { $0 === row }
+    guard showingAlert === row else { return }
+    if alert.window.sheetParent != nil { window.endSheet(alert.window, returnCode: response) }
+    showingAlert = nil
+    DispatchQueue.main.async { [weak self] in self?.showNextAlert() }
+  }
+
+  private func showNextAlert() {
+    guard showingAlert == nil, window.attachedSheet == nil, !waiting.isEmpty else { return }
+    let row = waiting.removeFirst()
+    guard let (alert, _) = row.pendingAlert else { return }
+    showingAlert = row
+    show()
+    alert.beginSheetModal(for: window) { [weak row, weak alert] response in
+      guard let alert else { return }
+      row?.resolve(alert, response: response)
+    }
+  }
+}
+
+private final class TransferRows: NSView {
+  override var isFlipped: Bool { true }
+}
+
+/// The progress and decision state of one operation in the shared window.
+@MainActor
+final class NativeTransferPanel: NSObject {
+  var window: NSPanel { NativeTransferWindow.shared.window }
+  let content = NSView()
   let label = NSTextField(labelWithString: NL("正在准备…"))
   let progress = NSProgressIndicator()
   let statistics = NSTextField(labelWithString: "")
@@ -18,22 +107,21 @@ final class NativeTransferPanel: NSObject, NSWindowDelegate {
   let showsWindows: Bool
   private(set) var pendingAlert: (NSAlert, (NSApplication.ModalResponse) -> Void)?
   var control: FileTransferControl?
-  init(parent: NSWindow?, showsWindows: Bool = true) {
+  init(showsWindows: Bool = true) {
     self.showsWindows = showsWindows
-    window = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 440, height: 176), styleMask: [.titled, .closable], backing: .buffered, defer: false)
     super.init()
-    window.title = NL("传输文件"); window.isReleasedWhenClosed = false; window.delegate = self
-    label.frame = NSRect(x: 20, y: 126, width: 400, height: 22); label.lineBreakMode = .byTruncatingMiddle
-    progress.frame = NSRect(x: 20, y: 98, width: 400, height: 16); progress.style = .bar; progress.isIndeterminate = true; progress.startAnimation(nil)
-    cancel.frame = NSRect(x: 330, y: 16, width: 90, height: 30); cancel.bezelStyle = .rounded; cancel.target = self; cancel.action = #selector(cancelTransfer)
-    statistics.frame = NSRect(x: 20, y: 66, width: 400, height: 22)
+    label.frame = NSRect(x: 20, y: 76, width: 400, height: 22); label.lineBreakMode = .byTruncatingMiddle
+    progress.frame = NSRect(x: 20, y: 54, width: 400, height: 16); progress.style = .bar; progress.isIndeterminate = true; progress.startAnimation(nil)
+    cancel.frame = NSRect(x: 330, y: 13, width: 90, height: 30); cancel.bezelStyle = .rounded; cancel.target = self; cancel.action = #selector(cancelTransfer)
+    statistics.frame = NSRect(x: 20, y: 17, width: 300, height: 22)
     statistics.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular); statistics.textColor = .secondaryLabelColor
     statistics.setAccessibilityLabel(NL("传输速度"))
     speedTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
       MainActor.assumeIsolated { self?.renderStatistics() }
     }
-    for view in [label, progress, statistics, cancel] { window.contentView?.addSubview(view) }
-    if let parent { window.setFrameOrigin(NSPoint(x: parent.frame.midX - 220, y: parent.frame.midY - 88)) } else { window.center() }
+    for view in [label, progress, statistics, cancel] { content.addSubview(view) }
+    guard showsWindows else { return }
+    NativeTransferWindow.shared.add(self)
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
       guard let self, self.showsWindows, !self.finished else { return }; self.window.orderFront(nil)
     }
@@ -42,7 +130,6 @@ final class NativeTransferPanel: NSObject, NSWindowDelegate {
     control?.cancel(); cancel.isEnabled = false; label.stringValue = NL("正在取消…")
     if let (alert, _) = pendingAlert { resolve(alert, response: .abort) }
   }
-  func windowShouldClose(_ sender: NSWindow) -> Bool { if finished { return true }; cancelTransfer(); return false }
   func update(_ value: FileTransferProgress) {
     guard !finished, control?.isCancelled != true else { return }
     let now = Date()
@@ -81,22 +168,20 @@ final class NativeTransferPanel: NSObject, NSWindowDelegate {
   func close() {
     finished = true; speedTimer?.invalidate(); speedTimer = nil
     if let (alert, _) = pendingAlert { resolve(alert, response: .abort) }
-    window.close(); control = nil
+    if showsWindows { NativeTransferWindow.shared.remove(self) }
+    control = nil
   }
   func present(_ alert: NSAlert, completion: @escaping (NSApplication.ModalResponse) -> Void) {
     guard !finished, control?.isCancelled != true, pendingAlert == nil else { completion(.abort); return }
     // Keep the sheet and its reply together so closing/cancelling cannot strand the worker.
     pendingAlert = (alert, completion)
     guard showsWindows else { return }
-    window.orderFront(nil)
-    alert.beginSheetModal(for: window) { [weak self, weak alert] response in
-      guard let alert else { return }; self?.resolve(alert, response: response)
-    }
+    NativeTransferWindow.shared.enqueueAlert(for: self)
   }
   func resolve(_ alert: NSAlert, response: NSApplication.ModalResponse) {
     guard let (active, completion) = pendingAlert, active === alert else { return }
     pendingAlert = nil
-    if alert.window.sheetParent != nil { window.endSheet(alert.window, returnCode: response) }
+    if showsWindows { NativeTransferWindow.shared.dismissAlert(for: self, alert: alert, response: response) }
     alert.window.orderOut(nil)
     completion(response)
   }
@@ -133,7 +218,7 @@ private final class TransferDecisionReply: @unchecked Sendable {
 extension BrowserController {
   func runTransferOperation(recordUndo: Bool = true, panel: NativeTransferPanel? = nil, completion: ((FileActionResult) -> Void)? = nil, _ operation: @escaping @Sendable (FileTransferControl) -> FileActionResult) {
     guard !busy else { return }
-    let panel = panel ?? NativeTransferPanel(parent: view.window)
+    let panel = panel ?? NativeTransferPanel()
     let smoke = ProcessInfo.processInfo.arguments.contains("--smoke-test")
     let diagnostics = smoke || !panel.showsWindows ? nil : TransferDiagnostics()
     let logDirectory = Bundle.main.bundleIdentifier == "local.macexplorer.native-validation"
@@ -170,12 +255,14 @@ extension BrowserController {
       DispatchQueue.main.async { panel?.setPhase(phase) }
     }, onTiming: { diagnostics?.record($0) })
     panel.control = control
-    runAsyncOperation(recordUndo: recordUndo, completion: { result in panel.close(); completion?(result) }) {
-      await Task.detached {
+    runAsyncOperation(recordUndo: recordUndo, completion: completion) {
+      let result = await Task.detached {
         let result = operation(control)
         _ = try? diagnostics?.finish(result, directory: logDirectory)
         return result
       }.value
+      panel.close()
+      return result
     }
   }
 }
@@ -183,16 +270,21 @@ extension BrowserController {
 @MainActor
 enum NativeTransferPanelChecks {
   static func run() async throws -> [String] {
-    let panel = NativeTransferPanel(parent: nil), control = FileTransferControl()
+    let panel = NativeTransferPanel(), control = FileTransferControl()
     panel.control = control
-    defer { panel.close() }
+    let second = NativeTransferPanel(), secondControl = FileTransferControl()
+    second.control = secondControl
+    defer { panel.close(); second.close() }
     var checks: [String] = []
     func expect(_ condition: Bool, _ message: String) throws {
       guard condition else { throw NativeSmoke.Failure(description: message) }; checks.append(message)
     }
     func buttons(_ view: NSView) -> [NSButton] { (view as? NSButton).map { [$0] } ?? view.subviews.flatMap(buttons) }
     let source = URL(fileURLWithPath: "/private/tmp/transfer-ui-fixture")
+    second.update(FileTransferProgress(source: source.appendingPathExtension("second"), completedBytes: 70, totalBytes: 100))
     panel.update(FileTransferProgress(source: source, completedBytes: 25, totalBytes: 100))
+    try expect(panel.content.window === second.content.window && panel.content.frame.maxY <= second.content.frame.minY &&
+      second.progress.doubleValue == 70, "Two simultaneous transfers use separate rows in one window")
     try expect(panel.label.stringValue == source.lastPathComponent && panel.progress.doubleValue == 25, "Transfer progress displays actual bytes without full-file verification reads")
     panel.update(FileTransferProgress(source: source, completedBytes: 100, totalBytes: 100, bytesPerSecond: 1024))
     try expect(panel.statistics.stringValue.contains("/s"), "Local copy displays a measured byte rate")
@@ -208,6 +300,12 @@ enum NativeTransferPanelChecks {
     var answer: FileTransferDecision?
     panel.problem(FileTransferProblem(source: source, destination: source.appendingPathExtension("copy"), message: "fixture", propertyLoss: true, moving: true)) { answer = $0 }
     try await NativeSmoke.until { panel.window.attachedSheet != nil }
+    let firstSheet = panel.window.attachedSheet
+    var secondResponse: NSApplication.ModalResponse?
+    second.present(NSAlert()) { secondResponse = $0 }
+    second.cancel.performClick(nil)
+    try expect(secondControl.isCancelled && !control.isCancelled && secondResponse == .abort &&
+      panel.window.attachedSheet === firstSheet, "Cancel affects only its row and does not dismiss another task's alert")
     let choices = panel.window.attachedSheet?.contentView.map(buttons) ?? []
     try expect([NL("重试"), NL("仍然移动"), NL("跳过"), NL("取消")].allSatisfy { title in choices.contains { $0.title == title } }, "Property-loss dialog exposes Retry, explicit Move anyway, Skip and Cancel")
     choices.first { $0.title == NL("跳过") }?.performClick(nil)

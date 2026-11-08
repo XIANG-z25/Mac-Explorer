@@ -21,7 +21,7 @@ enum NativeSMBTransferChecks {
     try expect(store.store(credential, key: "fixture") == 0 && store.forgetAll() == 0 && store.load("fixture") == nil, "Forget clears injected SMB account state")
     let restored = NativeSMBLoginFields(account: "other", previous: credential)
     try expect(restored.user.stringValue == credential.user && restored.remember.state == .on, "SMB retry uses explicitly supplied credential fields")
-    let panel = NativeTransferPanel(parent: nil); defer { panel.close() }
+    let panel = NativeTransferPanel(); defer { panel.close() }
     panel.control = FileTransferControl()
     let source = URL(fileURLWithPath: "/private/tmp/smb-ui-fixture")
     panel.update(FileTransferProgress(source: source, completedBytes: 1, totalBytes: 9, mode: .serverSide))

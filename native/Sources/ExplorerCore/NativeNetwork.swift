@@ -48,19 +48,8 @@ struct NativeVolumeReader {
   var attributes: (URL) throws -> NativeVolumeAttributes
   static var live: Self {
     let keys: Set<URLResourceKey> = [.volumeNameKey, .volumeTotalCapacityKey, .volumeAvailableCapacityKey, .volumeIsLocalKey, .volumeIsEjectableKey, .volumeIsRemovableKey]
-    return Self(mountedURLs: { FileManager.default.mountedVolumeURLs(includingResourceValuesForKeys: nil, options: [.skipHiddenVolumes]) }, mountKinds: {
-      // A private buffer is essential: address suggestions and cards can load concurrently.
-      var buffer: UnsafeMutablePointer<statfs>?
-      let count = getmntinfo_r_np(&buffer, MNT_NOWAIT)
-      guard count > 0, let buffer else { return [:] }
-      defer { Darwin.free(buffer) }
-      var result: [String: NativeVolumeKind] = [:]
-      for index in 0..<Int(count) {
-        var entry = buffer[index]
-        let path = withUnsafePointer(to: &entry.f_mntonname) { $0.withMemoryRebound(to: CChar.self, capacity: Int(MAXPATHLEN)) { String(cString: $0) } }
-        result[path] = entry.f_flags & UInt32(MNT_LOCAL) == 0 ? .network : .local
-      }
-      return result
+    return Self(mountedURLs: { NativeVolumes.visibleURLs() }, mountKinds: {
+      NativeVolumes.mountFlags().mapValues { $0 & UInt32(MNT_LOCAL) == 0 ? .network : .local }
     }, attributes: { url in
       let values = try url.resourceValues(forKeys: keys)
       return NativeVolumeAttributes(name: values.volumeName, total: values.volumeTotalCapacity.map(Int64.init), free: values.volumeAvailableCapacity.map(Int64.init), local: values.volumeIsLocal,
@@ -70,25 +59,99 @@ struct NativeVolumeReader {
 }
 
 public enum NativeVolumes {
+  static func mountFlags() -> [String: UInt32] {
+    // A private buffer lets background volume refreshes run concurrently.
+    var buffer: UnsafeMutablePointer<statfs>?
+    let count = getmntinfo_r_np(&buffer, MNT_NOWAIT)
+    guard count > 0, let buffer else { return [:] }
+    defer { Darwin.free(buffer) }
+    var result: [String: UInt32] = [:]
+    for index in 0..<Int(count) {
+      var entry = buffer[index]
+      let path = withUnsafeBytes(of: &entry.f_mntonname) { bytes in
+        String(decoding: bytes.prefix { $0 != 0 }, as: UTF8.self)
+      }
+      result[path] = entry.f_flags
+    }
+    return result
+  }
+
+  private static var mountyDirectory: String {
+    FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".mounty", isDirectory: true).path
+  }
+  private static func isMountyPath(_ path: String) -> Bool {
+    (path as NSString).deletingLastPathComponent == mountyDirectory
+  }
+  public static func sidebarMounts() -> [String: UInt32] {
+    mountFlags().filter { $0.key.hasPrefix("/Volumes/") || isMountyPath($0.key) }
+  }
+
+  public static func visibleURLs() -> [URL]? {
+    visibleURLs(foundation: FileManager.default.mountedVolumeURLs(includingResourceValuesForKeys: nil, options: [.skipHiddenVolumes]), flags: mountFlags())
+  }
+  static func visibleURLs(foundation: [URL]?, flags: [String: UInt32]) -> [URL]? {
+    let missing = flags.keys.sorted().filter { path in
+      guard let value = flags[path] else { return false }
+      // Mounty uses a hidden directory. Include its actual local mount points.
+      if isMountyPath(path) { return value & UInt32(MNT_LOCAL) != 0 }
+      guard path == "/" || path.hasPrefix("/Volumes/") else { return false }
+      return value & UInt32(MNT_DONTBROWSE) == 0
+    }
+    guard foundation != nil || !missing.isEmpty else { return nil }
+    var seen = Set<String>()
+    return ((foundation ?? []) + missing.map { URL(fileURLWithPath: $0, isDirectory: true) })
+      .filter { seen.insert($0.path).inserted }
+  }
+  public static func isReadOnly(_ url: URL) -> Bool {
+    guard url.isFileURL else { return false }
+    let path = url.standardizedFileURL.path
+    // The APFS system root is read-only, but firmlinked paths such as /Users are writable.
+    let mount = sidebarMounts().filter { root, _ in path == root || path.hasPrefix(root + "/") }
+      .max { $0.key.count < $1.key.count }
+    return mount.map { $0.value & UInt32(MNT_RDONLY) != 0 } ?? false
+  }
   public static func list() throws -> [NativeVolume] { try list(using: .live) }
+  public static func canEject(_ url: URL) -> Bool {
+    guard url.isFileURL, let flags = sidebarMounts()[url.path] else { return false }
+    if isMountyPath(url.path) { return flags & UInt32(MNT_LOCAL) != 0 }
+    let values = try? url.resourceValues(forKeys: [.volumeIsEjectableKey, .volumeIsRemovableKey, .volumeIsLocalKey])
+    return values?.volumeIsEjectable == true || values?.volumeIsRemovable == true || values?.volumeIsLocal == false
+  }
   static func list(using reader: NativeVolumeReader) throws -> [NativeVolume] {
     guard let urls = reader.mountedURLs() else { throw NativeNetwork.failure("无法读取已挂载的磁盘。") }
     let kinds = reader.mountKinds()
     var seen = Set<String>()
-    return urls.filter { ($0.path == "/" || $0.path.hasPrefix("/Volumes/")) && seen.insert($0.path).inserted }.map { url in
+    return urls.filter { ($0.path == "/" || $0.path.hasPrefix("/Volumes/") || isMountyPath($0.path)) && seen.insert($0.path).inserted }.map { url in
       let values = try? reader.attributes(url)
       let kind = kinds[url.path] ?? values?.local.map { $0 ? NativeVolumeKind.local : .network } ?? .unknown
       return NativeVolume(url: url, name: values?.name ?? url.lastPathComponent, total: values?.total, free: values?.free, kind: kind,
-        canEject: values?.ejectable == true || kind == .network, metadataUnavailable: values == nil)
+        canEject: isMountyPath(url.path) ? kind == .local : values?.ejectable == true || kind == .network, metadataUnavailable: values == nil)
     }.sorted { a, b in if a.url.path == "/" { return b.url.path != "/" }; if b.url.path == "/" { return false }; return a.name.localizedStandardCompare(b.name) == .orderedAscending }
   }
   public static func eject(_ url: URL) throws -> [NativeVolume] {
     let selected = try ejectable(url, among: list())
-    try NSWorkspace.shared.unmountAndEjectDevice(at: selected.url)
+    if isMountyPath(selected.path) {
+      // diskutil resolves the live mount point and normally unmounts its volumes before ejecting.
+      let process = Process()
+      let errors = Pipe()
+      process.executableURL = URL(fileURLWithPath: "/usr/sbin/diskutil")
+      process.arguments = ["eject", selected.path]
+      process.standardOutput = FileHandle.nullDevice
+      process.standardError = errors
+      try process.run()
+      let diagnostic = String(decoding: errors.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+      process.waitUntilExit()
+      guard process.terminationStatus == 0, sidebarMounts()[selected.path] == nil else {
+        throw NativeNetwork.failure(NL("无法推出磁盘：{0}。请关闭正在使用它的文件或应用后重试。", diagnostic.isEmpty ? selected.name : diagnostic))
+      }
+    } else {
+      try NSWorkspace.shared.unmountAndEjectDevice(at: selected.url)
+    }
     return try list()
   }
   public static func ejectable(_ url: URL, among volumes: [NativeVolume]) throws -> NativeVolume {
-    guard url.isFileURL, [nil, "", "localhost"].contains(url.host), url.query == nil, url.fragment == nil, url.path != "/", url.path.hasPrefix("/Volumes/"), url.standardizedFileURL.path == url.path,
+    guard url.isFileURL, [nil, "", "localhost"].contains(url.host), url.query == nil, url.fragment == nil, url.path != "/", url.path.hasPrefix("/Volumes/") || isMountyPath(url.path), url.standardizedFileURL.path == url.path,
       !url.path.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }),
       let volume = volumes.first(where: { $0.url.path == url.path && $0.canEject }), volume.url.path != "/" else {
       throw NativeNetwork.failure("此位置不是可推出的已挂载磁盘。")

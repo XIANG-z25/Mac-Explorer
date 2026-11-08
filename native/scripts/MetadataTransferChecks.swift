@@ -84,6 +84,21 @@ struct MetadataTransferChecks {
       try check(!exists(file) && (try dates(dest))==before && FileActions.identity(dest)==identity,"rename preserves identity and dates")
     }
     do {
+      let (file, _, _) = try fixture("same-volume-parent")
+      let parent = file.deletingLastPathComponent().deletingLastPathComponent()
+      let destination = parent.appendingPathComponent(file.lastPathComponent)
+      let identity = try FileActions.identity(file)
+      try Data("occupied".utf8).write(to: destination)
+      do {
+        _ = try VerifiedTransfer.moveRegularFileWithoutCopy(file, to: destination)
+        throw MetadataCheckFailure("Expected existing destination to block the move")
+      } catch let error as NSError where error.domain == NSPOSIXErrorDomain && error.code == Int(EEXIST) {}
+      try check(try exists(file) && Data(contentsOf: destination) == Data("occupied".utf8), "The no-copy move preserves both files on collision")
+      try fm.removeItem(at: destination)
+      try check(try VerifiedTransfer.moveRegularFileWithoutCopy(file, to: destination), "A regular file moves into its parent without copying")
+      try check(!exists(file) && (try FileActions.identity(destination)) == identity, "The no-copy move removes the old name and preserves file identity")
+    }
+    do {
       let(file,target,dest)=try fixture("move"), before=try dates(file)
       var hooks=TransferHooks();hooks.checkpoint={stage,current,_ in
         if stage == .beforeRemove { try check(current==file && exists(file),"source keeps its original name until deletion") }

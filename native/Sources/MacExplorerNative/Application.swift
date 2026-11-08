@@ -284,6 +284,8 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
     }
   }
 
+  @MainActor @objc private func showTransferWindow() { NativeTransferWindow.shared.show() }
+
   private func makeMenus() {
     let main = NSMenu()
     let app = NSMenu()
@@ -333,6 +335,7 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
     let windowMenu = NSMenu(title: NL("窗口"))
     windowMenu.addItem(withTitle: NL("最小化"), action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
     windowMenu.addItem(withTitle: NL("缩放"), action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
+    windowMenu.addItem(withTitle: NL("传输文件"), action: #selector(showTransferWindow), keyEquivalent: "").target = self
     addMenu(NL("窗口"), submenu: windowMenu, to: main)
     NSApp.windowsMenu = windowMenu
     NSApp.mainMenu = main

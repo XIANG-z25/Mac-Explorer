@@ -410,6 +410,38 @@ enum VerifiedTransfer {
     guard renameatx_np(source.parent.fd.raw, source.name, destination.parent.fd.raw, destination.name, UInt32(RENAME_EXCL)) == 0 else { throw posix() }
   }
 
+  // Some macFUSE filesystems implement hard links but not RENAME_EXCL.
+  // linkat reserves the new name atomically and cannot replace an existing file.
+  static func moveRegularFileWithoutCopy(_ sourceURL: URL, to destinationURL: URL) throws -> Bool {
+    let source = TransferTree(parent: try TransferAnchor(sourceURL.deletingLastPathComponent()), name: sourceURL.lastPathComponent)
+    let destination = TransferTree(parent: try TransferAnchor(destinationURL.deletingLastPathComponent()), name: destinationURL.lastPathComponent)
+    let original = try source.parent.entry(source.name)
+    guard original.type == S_IFREG, original.device == destination.parent.original.device else { return false }
+    try source.parent.validate()
+    try destination.parent.validate()
+    guard linkat(source.parent.fd.raw, source.name, destination.parent.fd.raw, destination.name, 0) == 0 else {
+      let code = errno
+      if [EXDEV, ENOTSUP, ENOSYS, EMLINK].contains(code) { return false }
+      throw posix(code)
+    }
+    do {
+      try source.parent.validate()
+      try destination.parent.validate()
+      guard try original.unchanged(source.parent.entry(source.name), ignoreChangeTime: true),
+            try original.unchanged(destination.parent.entry(destination.name), ignoreChangeTime: true) else {
+        throw failure("源文件已更改，已停止操作。")
+      }
+      guard unlinkat(source.parent.fd.raw, source.name, 0) == 0 else { throw posix() }
+      return true
+    } catch {
+      // Retain the new name as a recovery path if the source cannot be removed safely.
+      let detail = NL("无法移除源文件，已保留目标：{0}", destinationURL.path)
+      throw FileTransferFailure(item: FileTransferItem(source: sourceURL, destination: destinationURL,
+        outcome: .sourceRetained, method: .rename, contentVerified: false, datesVerified: false,
+        recoveryLocations: [destinationURL], message: detail), handled: true)
+    }
+  }
+
   /// Test the actual primitive with an empty owned directory before copying any data.
   /// SMB can leave the volume-capability valid bit unset; unknown is not "supported".
   private static func canPublish(in stage: TransferAnchor, hooks: TransferHooks) throws -> Bool {
@@ -438,6 +470,15 @@ enum VerifiedTransfer {
       } catch {
         let error = error as NSError
         guard error.domain == NSPOSIXErrorDomain && [EXDEV, ENOTSUP, ENOSYS].contains(Int32(error.code)) else { throw error }
+        if error.code != Int(EXDEV), source.parent.original.device == destination.parent.original.device {
+          var filesystem = statfs()
+          if fstatfs(destination.parent.fd.raw, &filesystem) == 0,
+             withUnsafeBytes(of: &filesystem.f_fstypename, { String(decoding: $0.prefix { $0 != 0 }, as: UTF8.self) }) == "macfuse",
+             try moveRegularFileWithoutCopy(input, to: output) {
+            return FileTransferItem(source: input, destination: output, outcome: .moved, method: .rename,
+              contentVerified: false, datesVerified: false, recoveryLocations: [], message: nil)
+          }
+        }
       }
     }
     var stage: TransferAnchor?

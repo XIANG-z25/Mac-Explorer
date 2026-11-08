@@ -83,6 +83,9 @@ final class ExplorerSpecialView: SurfaceView, NetServiceBrowserDelegate, NetServ
 
     needsLayout = true
   }
+  func refreshMountedVolumes() {
+    if mode == "computer" || mode == "network" { loadVolumes(token: revision) }
+  }
   private func loadVolumes(token: Int) {
     volumeRequest += 1; let request = volumeRequest, loader = volumeLoader
     Task { @MainActor [weak self] in

@@ -16,6 +16,9 @@ struct NativeFileFailure {
       if let url = value.userInfo[NSURLErrorKey] as? URL, url.isFileURL { return url }
       return nil
     }.last ?? context
+    if chain.contains(where: { $0.domain == NSPOSIXErrorDomain && $0.code == Int(EROFS) || $0.domain == NSCocoaErrorDomain && $0.code == NSFileWriteVolumeReadOnlyError }) {
+      return Self(message: NL("磁盘以只读方式挂载"), offersPrivacySettings: false)
+    }
     func denied(_ value: NSError) -> Bool {
       value.domain == NSCocoaErrorDomain && [NSFileReadNoPermissionError, NSFileWriteNoPermissionError].contains(value.code)
       || value.domain == NSPOSIXErrorDomain && [Int(EACCES), Int(EPERM)].contains(value.code)
