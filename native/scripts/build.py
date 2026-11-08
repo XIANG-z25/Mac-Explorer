@@ -57,7 +57,7 @@ info = {
     "CFBundleDisplayName": "Mac Explorer Daily" if args.personal else "Mac Explorer",
     "CFBundlePackageType": "APPL",
     "CFBundleIconFile": "AppIcon.icns",
-    "CFBundleShortVersionString": "1.7.6" if args.personal else (root / "VERSION").read_text().strip(),
+    "CFBundleShortVersionString": "1.7.7" if args.personal else (root / "VERSION").read_text().strip(),
     "CFBundleVersion": "1",
     "LSMinimumSystemVersion": "13.0",
     "NSHighResolutionCapable": True,

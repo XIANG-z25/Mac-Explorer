@@ -1043,5 +1043,6 @@
   "清除筛选": "Clear filters",
   "筛选": "Filter",
   "已启用筛选": "Filters on",
-  "本地自用版本，通过本地构建更新。": "Personal build. Update using a local build."
+  "本地自用版本，通过本地构建更新。": "Personal build. Update using a local build.",
+  "标签名称（逗号分隔）": "Tag names (comma separated)"
 }

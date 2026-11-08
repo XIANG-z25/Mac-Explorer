@@ -29,7 +29,7 @@ enum NativeSearchChecks {
     browser.applySearchFilters(FileSearchFilters())
     try await until { !browser.loading && browser.entries.count == 2 }
     try check(!browser.searchBox.filtersActive, "Clearing the last search filter restores the folder listing")
-    let tagged = FinderTags.set(["fixture-tag"], on: [text])
+    let tagged = FinderTags.set(["fixture-tag"], on: [text], replacing: [])
     try check(tagged.errors.isEmpty, "Search UI fixture tags are created on temporary files")
     browser.applySearchFilters(FileSearchFilters(tag: "fixture-tag"))
     try await until { !browser.loading && browser.entries.map(\.name) == ["notes.txt"] }

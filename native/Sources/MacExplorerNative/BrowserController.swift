@@ -28,6 +28,8 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
   private var vcsStatus: NativeVCSStatus?
   private var vcsGeneration = 0
   private var vcsReads = 0
+  private var vcsTask: Task<NativeVCSStatus?, Error>?
+  private var vcsPendingRefresh: Bool?
   private var vcsTimer: Timer?
   private var groupingTimer: Timer?
   private var reconnectTask: Task<Void, Never>?
@@ -164,7 +166,10 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
   private let byteFormatter = ByteCountFormatter(), dateFormatter = DateFormatter()
   private var detailsPreview: QLPreviewView?
   private let paneScroll = NSScrollView(), paneBody = SurfaceView()
-  private var paneRequest = UUID()
+  private var paneEntry: FileEntry?
+  private var paneReadEntry: FileEntry?
+  private var paneReadTask: Task<NativeFilePreview, Error>?
+  private var panePreview: (FileEntry, NativeFilePreview)?
 
   init(initial: URL, defaults: UserDefaults) {
     self.defaults = defaults; places = QuickAccessState(defaults: defaults); tabs = [BrowserTab(history: [initial])]
@@ -215,7 +220,7 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
     addressBar.labelForPath = { [weak self] in self?.locationLabel($0) ?? $0.lastPathComponent }
     addressBar.onCopyAddress = { [weak self] value in self?.filePasteboard.clearContents(); self?.filePasteboard.setString(value, forType: .string) }
     addressBar.onError = { [weak self] error in self?.lastError = self?.errorMessage(error); self?.render() }
-    addressBar.onFileDragValidate = { [weak self] info, target in self?.dropOperation(info, target: target) ?? [] }
+    addressBar.onFileDragValidate = { [weak self] info, target in self?.dropOperation(info, target: target, fromTab: true) ?? [] }
     addressBar.onFileDrop = { [weak self] info, target in self?.acceptFiles(info, at: target, fromTab: true) ?? false }
     search.delegate = self; searchBox.onSearch = { [weak self] in self?.performSearch() }; searchBox.onClear = { [weak self] in self?.searchActive = false; self?.reload() }; searchBox.onFilters = { [weak self] in self?.showSearchFilters() }; searchBox.filtersActive = !searchFilters.isDefault
     buildCommands(); buildFileViews()
@@ -475,7 +480,7 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
     for (index, tab) in tabs.enumerated() {
       let id = tab.id
       let item = ExplorerTabView(title: locationLabel(tab.directory), active: index == activeTab, onSelect: { [weak self] in guard let self, let index = self.tabs.firstIndex(where: { $0.id == id }) else { return }; self.switchTab(to: index) }, onClose: { [weak self] in guard let self, let index = self.tabs.firstIndex(where: { $0.id == id }) else { return }; self.closeTab(at: index) })
-      item.onDragValidate = { [weak self] info in self?.dropOperation(info, target: tab.directory) ?? [] }
+      item.onDragValidate = { [weak self] info in self?.dropOperation(info, target: tab.directory, fromTab: true) ?? [] }
       item.onDrop = { [weak self] info in self?.acceptFiles(info, at: tab.directory, fromTab: true) ?? false }
       item.canDetach = { [weak self] in self?.canDetachTab == true }
       item.onDetach = { [weak self] point in self?.detachTab(id: id, at: point) ?? false }
@@ -794,7 +799,7 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
     directoryWatcher.watch(directory.isFileURL && !searchActive ? directory : nil) { [weak self] in self?.scheduleAutomaticRefresh() }
     cancelInlineRename()
     ExplorerMenu.dismiss(); generation += 1; queryGeneration += 1; loadTask?.cancel(); queryTask?.cancel(); searchTask?.cancel()
-    vcsStatus = nil
+    vcsStatus = nil; vcsGeneration += 1; vcsTask?.cancel(); vcsPendingRefresh = nil
     let token = generation, target = directory; startedAt = Date(); loading = true; lastError = nil; snapshot = nil; entries = []
     readOnlyVolume = NativeVolumes.isReadOnly(target)
     addressBar.homeDirectory = home
@@ -887,6 +892,8 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
     directoryWatcher.stop(); automaticRead?.cancel(); reconnectTask?.cancel(); reconnectTask = nil; refreshWork?.cancel(); refreshWork = nil
     providerCloudDrivesTask?.cancel(); providerCloudDrivesTask = nil
     loadTask?.cancel(); queryTask?.cancel(); searchTask?.cancel()
+    vcsGeneration += 1; vcsTask?.cancel(); vcsPendingRefresh = nil
+    paneReadTask?.cancel(); paneEntry = nil; panePreview = nil
     inputNavigation?.close(); inputNavigation = nil; preferencesWork?.cancel(); vcsTimer?.invalidate(); vcsTimer = nil; groupingTimer?.invalidate(); groupingTimer = nil
     if let focusObserver { NotificationCenter.default.removeObserver(focusObserver); self.focusObserver = nil }
     removeMountObservers()
@@ -1409,7 +1416,10 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
 
   private func togglePane(_ name: String) { paneMode = paneMode == name ? "" : name; defaults.set(paneMode, forKey: "paneMode"); updatePane(); updateStatus(); view.needsLayout = true }
   private func updatePane() {
-    paneRequest = UUID(); let request = paneRequest
+    let selected = selectedEntries()
+    paneEntry = !stopped && paneMode == "details" && selected.count == 1 && NativeFilePreview.supports(selected[0]) ? selected[0] : nil
+    if paneReadEntry != paneEntry { paneReadTask?.cancel() }
+    if panePreview?.0 != paneEntry { panePreview = nil }
     detailsPreview?.previewItem = nil; detailsPreview?.removeFromSuperview(); detailsPreview = nil
     pane.subviews.forEach { $0.removeFromSuperview() }; paneBody.subviews.forEach { $0.removeFromSuperview() }
     guard !paneMode.isEmpty else { return }
@@ -1417,30 +1427,19 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
     let close = ExplorerButton(icon: "close") { [weak self] in self?.paneMode = ""; self?.defaults.set("", forKey: "paneMode"); self?.updatePane(); self?.updateStatus(); self?.view.needsLayout = true }; close.identifier = NSUserInterfaceItemIdentifier("close"); pane.addSubview(close)
     paneScroll.documentView = paneBody; paneScroll.hasVerticalScroller = true; paneScroll.autohidesScrollers = true; paneScroll.drawsBackground = false
     pane.addSubview(paneScroll)
-    let selected = selectedEntries()
     if selected.count == 1, let entry = selected.first {
       let name = label(entry.name, size: 15); name.font = .systemFont(ofSize: 15, weight: .semibold); name.identifier = NSUserInterfaceItemIdentifier("name"); paneBody.addSubview(name)
       if paneMode == "preview", !entry.isDirectory, let preview = QLPreviewView(frame: .zero, style: .normal) {
         preview.previewItem = entry.url as NSURL; paneBody.addSubview(preview); detailsPreview = preview
       } else {
         let backdrop = SurfaceView(); backdrop.color = ExplorerPalette.surface; backdrop.identifier = NSUserInterfaceItemIdentifier("preview-background"); paneBody.addSubview(backdrop)
-        let icon = FileIconView(); icon.show(entry); icon.imageScaling = .scaleProportionallyUpOrDown; icon.identifier = NSUserInterfaceItemIdentifier("icon"); paneBody.addSubview(icon)
+        let icon = FileIconView(); icon.show(entry, pixels: 140); icon.imageScaling = .scaleProportionallyUpOrDown; icon.identifier = NSUserInterfaceItemIdentifier("icon"); paneBody.addSubview(icon)
         var values = [entry.kind, NL("位置"), entry.url.deletingLastPathComponent().path, NL("大小"), entry.isDirectory ? NL("文件夹") : NL("{0}（{1} 字节）", ExplorerFormat.size(entry.size), entry.size.formatted(.number.locale(NativeLanguage.formatLocale))), NL("修改日期"), entry.modified.map(dateFormatter.string) ?? "—", NL("创建日期"), entry.created.map(dateFormatter.string) ?? "—"]
         if entry.isSymbolicLink { values += [NL("链接"), NL("符号链接")] }
         for (i, text) in values.enumerated() { let value = label(text, size: i == 0 ? 12 : 11, color: i % 2 == 1 ? ExplorerPalette.secondary : ExplorerPalette.text); value.toolTip = text; value.identifier = NSUserInterfaceItemIdentifier("value-\(i)"); paneBody.addSubview(value) }
         if paneMode == "details" {
-          Task { @MainActor [weak self, weak icon] in
-            let result = try? await Task.detached(priority: .utility) { try NativeFilePreview.read(entry) }.value
-            guard let self, self.paneRequest == request else { return }
-            if let data = result?.image { icon?.image = NSImage(data: data) }
-            if let text = result?.text {
-              let preview = NSTextView(); preview.string = text; preview.isEditable = false; preview.font = .monospacedSystemFont(ofSize: 11, weight: .regular); preview.textColor = ExplorerPalette.text; preview.backgroundColor = ExplorerPalette.surface
-              let scroll = NSScrollView(); scroll.documentView = preview; scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true; scroll.identifier = NSUserInterfaceItemIdentifier("text-preview"); self.paneBody.addSubview(scroll)
-              let heading = label(NL("内容预览"), size: 12); heading.identifier = NSUserInterfaceItemIdentifier("text-heading"); self.paneBody.addSubview(heading)
-              if result?.truncated == true { let note = label(NL("仅显示前 16 KB"), size: 11, color: ExplorerPalette.secondary); note.identifier = NSUserInterfaceItemIdentifier("text-limit"); self.paneBody.addSubview(note) }
-              self.layoutPane()
-            }
-          }
+          if let cached = panePreview { showPaneText(cached.1) }
+          readPaneText()
         }
       }
       let quick = ExplorerButton(title: NL("快速查看")) { [weak self] in self?.previewSelected() }
@@ -1455,6 +1454,29 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
       }
     }
     layoutPane()
+  }
+  private func readPaneText() {
+    // Cancellation may not interrupt a filesystem read; keep its slot until it finishes.
+    guard !stopped, paneReadTask == nil, let entry = paneEntry, panePreview?.0 != entry else { return }
+    let task = Task.detached(priority: .utility) { try NativeFilePreview.read(entry) }
+    paneReadTask = task; paneReadEntry = entry
+    Task { @MainActor [weak self] in
+      let result = try? await task.value
+      guard let self else { return }
+      self.paneReadTask = nil; self.paneReadEntry = nil
+      if !self.stopped, self.paneEntry == entry, !task.isCancelled {
+        let preview = result ?? NativeFilePreview()
+        self.panePreview = (entry, preview); self.showPaneText(preview); self.layoutPane()
+      }
+      self.readPaneText()
+    }
+  }
+  private func showPaneText(_ result: NativeFilePreview) {
+    guard let text = result.text else { return }
+    let preview = NSTextView(); preview.string = text; preview.isEditable = false; preview.font = .monospacedSystemFont(ofSize: 11, weight: .regular); preview.textColor = ExplorerPalette.text; preview.backgroundColor = ExplorerPalette.surface
+    let scroll = NSScrollView(); scroll.documentView = preview; scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true; scroll.identifier = NSUserInterfaceItemIdentifier("text-preview"); paneBody.addSubview(scroll)
+    let heading = label(NL("内容预览"), size: 12); heading.identifier = NSUserInterfaceItemIdentifier("text-heading"); paneBody.addSubview(heading)
+    if result.truncated { let note = label(NL("仅显示前 16 KB"), size: 11, color: ExplorerPalette.secondary); note.identifier = NSUserInterfaceItemIdentifier("text-limit"); paneBody.addSubview(note) }
   }
   private func layoutPane() {
     let width = pane.bounds.width
@@ -1507,7 +1529,7 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
       guard let self else { return }
       ExplorerDialogs.finderTags(in: window, initial: initial, count: urls.count) { [weak self] names in
         self?.runAsyncOperation(recordUndo: false, selectResults: false) {
-          await Task.detached(priority: .utility) { FinderTags.set(names, on: urls) }.value
+          await Task.detached(priority: .utility) { FinderTags.set(names, on: urls, replacing: initial) }.value
         }
       }
     }
@@ -2019,17 +2041,17 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
   func collectionView(_ collectionView: NSCollectionView, pasteboardWriterForItemAt indexPath: IndexPath) -> NSPasteboardWriting? {
     guard let index = entryIndex(at: indexPath.item) else { return nil }; return entries[index].url as NSURL
   }
-  private func dropOperation(_ info: NSDraggingInfo, target: URL? = nil) -> NSDragOperation {
-    let acceptsTarget: Bool
-    if let target { acceptsTarget = target.isFileURL && target.path != home.appendingPathComponent(".Trash").path && !target.path.hasPrefix(home.appendingPathComponent(".Trash").path + "/") && !target.pathComponents.contains(".Trashes") }
-    else { acceptsTarget = writable }
-    guard !busy, acceptsTarget, info.draggingPasteboard.canReadObject(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) else { return [] }
+  private func dropOperation(_ info: NSDraggingInfo, target: URL, fromTab: Bool = false) -> NSDragOperation {
+    guard !busy, fromTab || writable, target.isFileURL,
+          target.path != home.appendingPathComponent(".Trash").path, !target.path.hasPrefix(home.appendingPathComponent(".Trash").path + "/"), !target.pathComponents.contains(".Trashes"),
+          let urls = info.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL], !urls.isEmpty,
+          !urls.contains(where: { $0.standardizedFileURL.path == target.standardizedFileURL.path }) else { return [] }
     return NSEvent.modifierFlags.contains(.option) || !info.draggingSourceOperationMask.contains(.move) ? .copy : .move
   }
   func tableView(_ tableView: NSTableView, validateDrop info: NSDraggingInfo, proposedRow row: Int, proposedDropOperation operation: NSTableView.DropOperation) -> NSDragOperation {
-    if let index = entryIndex(at: row), entries[index].isDirectory, !entries[index].isPackage { tableView.setDropRow(row, dropOperation: .on) }
-    else { tableView.setDropRow(-1, dropOperation: .on) }
-    return dropOperation(info)
+    let target = entryIndex(at: row).flatMap { entries[$0].isDirectory && !entries[$0].isPackage ? entries[$0].url : nil }
+    tableView.setDropRow(target == nil ? -1 : row, dropOperation: .on)
+    return dropOperation(info, target: target ?? directory)
   }
   func tableView(_ tableView: NSTableView, acceptDrop info: NSDraggingInfo, row: Int, dropOperation operation: NSTableView.DropOperation) -> Bool {
     let target = entryIndex(at: row).flatMap { entries[$0].isDirectory && !entries[$0].isPackage ? entries[$0].url : nil } ?? directory
@@ -2037,8 +2059,9 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
   }
   func collectionView(_ collectionView: NSCollectionView, validateDrop info: NSDraggingInfo, proposedIndexPath index: AutoreleasingUnsafeMutablePointer<NSIndexPath>, dropOperation operation: UnsafeMutablePointer<NSCollectionView.DropOperation>) -> NSDragOperation {
     let row = index.pointee.item
-    operation.pointee = entryIndex(at: row).map { entries[$0].isDirectory && !entries[$0].isPackage } == true ? .on : .before
-    return dropOperation(info)
+    let target = entryIndex(at: row).flatMap { entries[$0].isDirectory && !entries[$0].isPackage ? entries[$0].url : nil }
+    operation.pointee = target == nil ? .before : .on
+    return dropOperation(info, target: target ?? directory)
   }
   func collectionView(_ collectionView: NSCollectionView, acceptDrop info: NSDraggingInfo, indexPath: IndexPath, dropOperation operation: NSCollectionView.DropOperation) -> Bool {
     let row = indexPath.item
@@ -2046,7 +2069,7 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
     return acceptFiles(info, at: target)
   }
   private func acceptFiles(_ info: NSDraggingInfo, at target: URL, fromTab: Bool = false) -> Bool {
-    let operation = dropOperation(info, target: fromTab ? target : nil)
+    let operation = dropOperation(info, target: target, fromTab: fromTab)
     let urls = info.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
     guard !urls.isEmpty, !operation.isEmpty else { return false }
     runTransferOperation { control in FileActions.transfer(urls, to: target, move: operation == .move, control: control) }; return true
@@ -2064,7 +2087,7 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
     mountObservers.forEach(workspace.removeObserver)
     mountObservers.removeAll()
   }
-  deinit { removeMountObservers(); reconnectTask?.cancel(); groupingTimer?.invalidate(); vcsTimer?.invalidate(); if let focusObserver { NotificationCenter.default.removeObserver(focusObserver) }; preferencesWork?.cancel(); if let preferencesObserver { NotificationCenter.default.removeObserver(preferencesObserver) }; loadTask?.cancel(); queryTask?.cancel(); searchTask?.cancel(); automaticRead?.cancel(); refreshWork?.cancel(); if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }; if let paletteObserver { NotificationCenter.default.removeObserver(paletteObserver) }; if let settingsObserver { NotificationCenter.default.removeObserver(settingsObserver) } }
+  deinit { removeMountObservers(); paneReadTask?.cancel(); vcsTask?.cancel(); reconnectTask?.cancel(); groupingTimer?.invalidate(); vcsTimer?.invalidate(); if let focusObserver { NotificationCenter.default.removeObserver(focusObserver) }; preferencesWork?.cancel(); if let preferencesObserver { NotificationCenter.default.removeObserver(preferencesObserver) }; loadTask?.cancel(); queryTask?.cancel(); searchTask?.cancel(); automaticRead?.cancel(); refreshWork?.cancel(); if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }; if let paletteObserver { NotificationCenter.default.removeObserver(paletteObserver) }; if let settingsObserver { NotificationCenter.default.removeObserver(settingsObserver) } }
 }
 
 
@@ -2159,21 +2182,33 @@ extension BrowserController {
     refreshVCS(force: true)
   }
   private func refreshVCS(force: Bool = false) {
-    guard !stopped, force || vcsReads == 0 else { return }
+    guard !stopped else { return }
+    guard let service = versionControl, service.isEnabled, directory.isFileURL, !viewingTrash else {
+      vcsGeneration += 1; vcsTask?.cancel(); vcsPendingRefresh = nil
+      vcsStatus = nil; for index in entries.indices { entries[index].vcsMark = nil }; render(); return
+    }
+    guard vcsReads == 0 else { vcsPendingRefresh = (vcsPendingRefresh ?? false) || force; return }
     vcsGeneration += 1; let token = vcsGeneration, target = directory
-    guard let service = versionControl, service.isEnabled, target.isFileURL, !viewingTrash else { vcsStatus = nil; for index in entries.indices { entries[index].vcsMark = nil }; render(); return }
-    vcsReads += 1
+    vcsReads = 1
+    let task = Task.detached(priority: .utility) { try Task.checkCancellation(); return try service.status(directory: target, force: force) }
+    vcsTask = task
     Task { @MainActor [weak self] in
-      defer { self?.vcsReads -= 1 }
+      defer {
+        if let self {
+          self.vcsReads = 0; self.vcsTask = nil
+          let pending = self.vcsPendingRefresh; self.vcsPendingRefresh = nil
+          if let force = pending { self.refreshVCS(force: force) }
+        }
+      }
       do {
-        let state = try await Task.detached(priority: .utility) { try service.status(directory: target, force: force) }.value
-        guard let self, self.directory == target, self.vcsGeneration == token, !self.stopped, service.isEnabled else { return }
+        let state = try await task.value
+        guard let self, !task.isCancelled, self.directory == target, self.vcsGeneration == token, !self.stopped, service.isEnabled else { return }
         guard self.vcsStatus != state || self.entries.contains(where: { $0.vcsMark != state?.statesByPath[$0.id]?.mark }) else { return }
         self.vcsStatus = state
         for index in self.entries.indices { self.entries[index].vcsMark = state?.statesByPath[self.entries[index].id]?.mark }
         if let error = state?.error { self.operationError = error }
         self.render()
-      } catch { guard let self, self.directory == target, self.vcsGeneration == token, service.isEnabled else { return }; self.operationError = error.localizedDescription; self.render() }
+      } catch { guard let self, !task.isCancelled, !self.stopped, self.directory == target, self.vcsGeneration == token, service.isEnabled else { return }; self.operationError = error.localizedDescription; self.render() }
     }
   }
   private func showVCS(_ action: NativeVCSAction) {
