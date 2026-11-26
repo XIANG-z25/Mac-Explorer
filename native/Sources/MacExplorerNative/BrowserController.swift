@@ -757,6 +757,9 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
     let icons = Dictionary(uniqueKeysWithValues: defaultPlaces.map { ($0.0.path, $0.1) })
     for path in pinnedPaths { let url = URL(fileURLWithPath: path); row(locationLabel(url), url, icons[path] ?? "folder", pinned: true) }
     divider()
+    if Bundle.main.object(forInfoDictionaryKey: "ExplorerPersonalBuild") as? Bool == true {
+      row(NL("安卓手机（USB）"), URL(string: "explorer://android")!, "computer")
+    }
     row(NL("此电脑"), URL(string: "explorer://computer")!, "computer")
     sidebarRows.last?.1.expanded = true; sidebarRows.last?.1.onExpand = nil
     row((try? URL(fileURLWithPath: "/").resourceValues(forKeys: [.volumeNameKey]).volumeName) ?? "Macintosh HD", URL(fileURLWithPath: "/"), "drive", level: 1)
@@ -933,6 +936,7 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
   }
 
   func navigate(to url: URL, addHistory: Bool = true) {
+    if url.absoluteString == "explorer://android" { NativeAndroidWindow.present(); return }
     guard !openOneDriveInFinder(url) else { return }
     if let desktop { desktop.openFolder(url); return }
     let target = url.standardizedFileURL
@@ -1535,6 +1539,7 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
     tabs = [tab]; activeTab = 0; prepareLocationState(tab.locationStates[tab.index] ?? BrowserLocationState()); restoreView(tab.directory, touch: true)
   }
   func openTab(at url: URL) {
+    if url.absoluteString == "explorer://android" { NativeAndroidWindow.present(); return }
     guard !openOneDriveInFinder(url) else { return }
     if let desktop { desktop.openFolder(url); return }
     rememberLocationState()

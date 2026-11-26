@@ -57,7 +57,7 @@ info = {
     "CFBundleDisplayName": "Mac Explorer Daily" if args.personal else "Mac Explorer",
     "CFBundlePackageType": "APPL",
     "CFBundleIconFile": "AppIcon.icns",
-    "CFBundleShortVersionString": (root / "VERSION").read_text().strip(),
+    "CFBundleShortVersionString": "1.11.0" if args.personal else (root / "VERSION").read_text().strip(),
     "CFBundleVersion": "1",
     "LSMinimumSystemVersion": "13.0",
     "NSHighResolutionCapable": True,
@@ -76,6 +76,8 @@ info = {
 }
 if args.personal:
     info["ExplorerPersonalBuild"] = True
+    info["NSUSBAlwaysUsageDescription"] = "通过 USB 读取已授权安卓手机中的文件。"
+    subprocess.run([sys.executable, str(root / "scripts/build-android.py"), "--app", str(app)], check=True)
 with (contents / "Info.plist").open("wb") as output:
     plistlib.dump(info, output)
 subprocess.run(["codesign", "--force", "--sign", "-", str(app)], check=True)
