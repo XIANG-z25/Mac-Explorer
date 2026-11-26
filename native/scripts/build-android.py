@@ -2,6 +2,7 @@
 """Build pinned, user-space MTP libraries and a read-only helper for macOS 13+."""
 import argparse
 import hashlib
+import json
 import os
 import pathlib
 import shutil
@@ -26,7 +27,8 @@ environment['PKG_CONFIG'] = shutil.which('pkgconf') or shutil.which('pkg-config'
 if not environment['PKG_CONFIG']:
     raise SystemExit('Install pkgconf to build Android support: brew install pkgconf')
 marker = work / 'macos13-complete'
-expected = '\n'.join(p[2] for p in packages)
+patch = root / 'Helpers/libmtp-macos.patch'
+expected = '\n'.join(p[2] for p in packages) + '\n' + hashlib.sha256(patch.read_bytes()).hexdigest()
 if not marker.exists() or marker.read_text() != expected:
     for name, url, sha in packages:
         archive = work / url.rsplit('/', 1)[-1]
@@ -35,9 +37,15 @@ if not marker.exists() or marker.read_text() != expected:
         if hashlib.sha256(archive.read_bytes()).hexdigest() != sha:
             raise SystemExit('Android dependency checksum mismatch: ' + name)
         source = work / name
+        if name.startswith('libmtp-') and source.exists():
+            shutil.rmtree(source)  # Always apply the current patch to the verified source archive.
         if not source.exists():
             with tarfile.open(archive) as stream:
                 stream.extractall(work, filter='data')
+        if name.startswith('libmtp-'):
+            glue = source / 'src/libusb1-glue.c'
+            if 'AndroidReader: this USB identity' not in glue.read_text():
+                subprocess.run(['patch', '-p1', '--batch', '-i', str(patch)], cwd=source, check=True)
         subprocess.run(['./configure', '--prefix=' + str(prefix), '--disable-static'], cwd=source, env=environment, check=True)
         subprocess.run(['make', '-j4'], cwd=source, env=environment, check=True)
         subprocess.run(['make', 'install'], cwd=source, env=environment, check=True)
@@ -62,10 +70,17 @@ subprocess.run(['install_name_tool', '-change', str(prefix / 'lib/libmtp.9.dylib
 for name in libraries:
     subprocess.run(['codesign', '--force', '--sign', '-', str(frameworks / name)], check=True)
 subprocess.run(['codesign', '--force', '--sign', '-', str(helper)], check=True)
+schema = json.loads(subprocess.check_output([str(helper), '--check-format'], timeout=10))
+if schema[0]['directory'] is not True or schema[1]['directory'] is not False:
+    raise SystemExit('Android helper must encode directory flags as JSON booleans')
+
 for name, _, _ in packages:
     shutil.copy2(work / name / 'COPYING', resources / (name + '-LICENSE.txt'))
 (resources / 'ANDROID-SOURCE.txt').write_text(
+    'The bundled libmtp includes the macOS close-reset patch (libmtp-macos.patch).\n'
     'Android USB support uses dynamically linked libmtp and libusb (LGPL-2.1-or-later).\n'
     'Rebuild with native/scripts/build-android.py; replaceable libraries are in Contents/Frameworks.\n'
     + '\n'.join(name + '\n' + url + '\nSHA-256 ' + sha for name, url, sha in packages) + '\n')
 print(helper)
+
+shutil.copy2(patch, resources / 'libmtp-macos.patch')

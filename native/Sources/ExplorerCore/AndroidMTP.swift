@@ -38,6 +38,12 @@ public struct AndroidMTP: Sendable {
       let code = response?["error"] ?? ""
       if code == "destinationUnavailable" { throw Self.failure(NL("目标文件已存在或无法写入。")) }
       throw Self.failure(NL("无法读取手机。请解锁手机，选择 USB 文件传输，并关闭其他手机传输软件后重试。"))
+    } catch {
+      let failure = error as NSError
+      if failure.domain == "NativeCommand" && failure.code == 1 {
+        throw Self.failure(NL("连接手机超时。请重新连接 USB 后刷新设备。"))
+      }
+      throw error
     }
     return try JSONDecoder().decode(T.self, from: result.output)
   }

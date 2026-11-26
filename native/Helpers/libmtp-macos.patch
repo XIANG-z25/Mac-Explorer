@@ -1,0 +1,18 @@
+--- a/src/libusb1-glue.c
++++ b/src/libusb1-glue.c
+@@ -2100,7 +2100,14 @@
+     clear_stall(ptp_usb);
+     libusb_release_interface(ptp_usb->handle, (int) ptp_usb->interface);
+   }
+-  if (FLAG_FORCE_RESET_ON_CLOSE(ptp_usb)) {
++  /* AndroidReader: this USB identity is reused by modern OnePlus phones.
++   * Resetting it after every read-only session breaks the next request. */
++  if (FLAG_FORCE_RESET_ON_CLOSE(ptp_usb)
++#ifdef __APPLE__
++      && !(ptp_usb->rawdevice.device_entry.vendor_id == 0x22d9 &&
++           ptp_usb->rawdevice.device_entry.product_id == 0x2764)
++#endif
++     ) {
+     /*
+      * Some devices really love to get reset after being
+      * disconnected. Again, since Windows never disconnects

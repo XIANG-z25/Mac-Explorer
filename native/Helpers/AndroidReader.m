@@ -5,6 +5,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <errno.h>
+#include <string.h>
 
 static uint32_t number(const char *value) {
   if (!value || !*value) @throw @"invalidRequest";
@@ -21,6 +22,11 @@ static NSString *token(LIBMTP_raw_device_t *raw) {
   return [NSString stringWithFormat:@"%u-%u-%u-%u", raw->bus_location, raw->devnum,
     raw->device_entry.vendor_id, raw->device_entry.product_id];
 }
+static NSDictionary *itemJSON(LIBMTP_file_t *file) {
+  return @{@"id":@(file->item_id), @"name":text(file->filename),
+    @"directory":file->filetype == LIBMTP_FILETYPE_FOLDER ? @YES : @NO,
+    @"size":@(file->filesize)};
+}
 static void freeFiles(LIBMTP_file_t *file) {
   while (file) { LIBMTP_file_t *next = file->next; LIBMTP_destroy_file_t(file); file = next; }
 }
@@ -28,6 +34,14 @@ int main(int argc, const char **argv) {
   @autoreleasepool {
     int jsonOutput = dup(STDOUT_FILENO);
     dup2(STDERR_FILENO, STDOUT_FILENO); // libmtp diagnostics must not corrupt JSON.
+    if (argc == 2 && strcmp(argv[1], "--check-format") == 0) {
+      LIBMTP_file_t folder = {.item_id=1, .filename="folder", .filetype=LIBMTP_FILETYPE_FOLDER};
+      LIBMTP_file_t file = {.item_id=2, .filename="file", .filetype=LIBMTP_FILETYPE_UNKNOWN};
+      NSData *data = [NSJSONSerialization dataWithJSONObject:@[itemJSON(&folder), itemJSON(&file)] options:0 error:NULL];
+      NSFileHandle *output = [[NSFileHandle alloc] initWithFileDescriptor:jsonOutput closeOnDealloc:YES];
+      [output writeData:data];
+      return 0;
+    }
     LIBMTP_raw_device_t *raw = NULL;
     int count = 0;
     LIBMTP_mtpdevice_t *device = NULL;
@@ -45,7 +59,7 @@ int main(int argc, const char **argv) {
         if (argc != 2) @throw @"invalidRequest";
         NSMutableArray *devices = [NSMutableArray array];
         for (int i = 0; i < count && i < 64; i++) {
-          [devices addObject:@{@"id":token(&raw[i]), @"name":text(raw[i].device_entry.product)}];
+          [devices addObject:@{@"id":token(&raw[i]), @"name":[NSString stringWithFormat:@"Android USB %d", i + 1]}];
         }
         response = devices;
       } else {
@@ -74,8 +88,7 @@ int main(int argc, const char **argv) {
           NSMutableArray *items = [NSMutableArray array];
           for (LIBMTP_file_t *file = files; file; file = file->next) {
             if (items.count >= 100000) { freeFiles(files); @throw @"tooManyItems"; }
-            [items addObject:@{@"id":@(file->item_id), @"name":text(file->filename),
-              @"directory":@(file->filetype == LIBMTP_FILETYPE_FOLDER), @"size":@(file->filesize)}];
+            [items addObject:itemJSON(file)];
           }
           freeFiles(files); response = items;
         } else {
@@ -102,7 +115,7 @@ int main(int argc, const char **argv) {
     }
     if (device) LIBMTP_Release_Device(device);
     free(raw);
-    NSData *data = [NSJSONSerialization dataWithJSONObject:response ?: @[] options:0 error:nil];
+    NSData *data = [NSJSONSerialization dataWithJSONObject:response ?: @[] options:0 error:NULL];
     const uint8_t *bytes = data.bytes;
     NSUInteger remaining = data.length;
     while (remaining) {
