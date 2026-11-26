@@ -1,34 +1,149 @@
-# Mac Explorer Daily
+<div align="center">
+  <img src="design/icon-selected-mirrored.png" width="88" alt="Mac Explorer 圖示">
+  <h1>Mac Explorer</h1>
+  <p><a href="README.md">简体中文</a> &nbsp;·&nbsp; <strong>繁體中文</strong> &nbsp;·&nbsp; <a href="README.en.md">English</a></p>
+  <h3>熟悉的操作，Mac 的體驗。</h3>
+  <p>一款原生 macOS 檔案管理器，讓熟悉的 Windows 檔案管理習慣，在 Mac 上延續。<br>從工作文件到生活照片，為每天與檔案打交道的你而做。</p>
+  <p>
+    <a href="#下載與安裝"><strong>一鍵安裝</strong></a> &nbsp;·&nbsp;
+    <a href="#日常所需觸手可及">功能一覽</a> &nbsp;·&nbsp;
+    <a href="https://github.com/qixiaoyu27/Mac-Explorer/releases">更新紀錄</a>
+  </p>
+  <p><sub>macOS 13 及以上 · Apple Silicon（M 系列）· 免費開源</sub></p>
+</div>
 
-[简体中文](README.md) · 繁體中文 · [English](README.en.md)
+<br>
 
-用熟悉的 Windows 11 檔案總管操作，在 Mac 上整理檔案。採用原生 Swift / AppKit 開發。
+![Mac Explorer 介面預覽](docs/images/explorer-light-0.1.53.png)
 
-[下載 1.7.8 DMG](https://github.com/XIANG-z25/Mac-Explorer/releases/download/v1.7.8/Mac-Explorer-Daily-1.7.8-mac-arm64.dmg) · [版本說明](https://github.com/XIANG-z25/Mac-Explorer/releases/tag/v1.7.8)
+<p align="center"><sub>圖示為早期版本，目前版本介面以實際應用程式為準。</sub></p>
 
-## Daily 1.7.8（組建 2）與上游 1.7.1 的差異
+換到 Mac，有很多值得喜歡的新體驗，也有一些早已順手的習慣：沿著目錄樹找檔案，複製一段路徑直達目的地，在幾個資料夾之間剪下、貼上。Mac Explorer 希望把這些習慣延續下來，讓你把注意力留給手邊的事情。
 
-`zx/daily-native` 分支已合併[上游 1.7.1](https://github.com/qixiaoyu27/Mac-Explorer/commit/68a4677df9f6ba7b54e947577ded3ebd932e9357)。Daily 使用獨立的應用程式識別碼，保留先前 Daily 的偏好設定。**1.7.8 提供可直接安裝的 DMG，也可從原始碼建置。**
+無論是整理一週的下載、挑選旅行照片，還是在多個專案之間切換，你都可以用熟悉的方式開始，再慢慢把檢視、工具列和快速鍵調整成自己的樣子。
 
-- 掛載後的外接磁碟（含 Mounty）會顯示在側邊欄「此電腦」，可按右鍵安全退出。唯讀掛載會顯示提示，NTFS 寫入由已安裝的驅動程式提供。
-- 磁碟卷支援時直接移動檔案，Mounty NTFS 上的一般檔案也可無須複製內容即可移動，並保護目的地的同名檔案。複製和移動集中在同一視窗，可分別查看進度、速度或取消。
-- 支援複製分頁、從位址列在新分頁開啟資料夾、在詳細資料列的留白處拖曳框選、切換圖示檢視時立即重新分組，以及在指標旁顯示完整檔名。
-- 修正未輸入關鍵字時的篩選，以及清除最後一個篩選條件後返回資料夾清單的行為。側邊欄會合併指向相同位置的雲端硬碟入口。同步與離線保留由各自的用戶端管理。
-- 大量選取時減少重複的磁碟卷檢查。詳細資料面板會重複使用文字預覽，減少切換檔案時的排版配置。
+## 下載與安裝
 
-在儲存庫根目錄執行 `python3 -I native/scripts/build.py --personal`，再將 `native/output/personal/Mac Explorer Daily.app` 拖入「應用程式」。詳見[原生版開發文件](native/README.md#构建和打开)。
+開啟「終端機」，執行：
 
-## 1.7.0 已發行功能
+```sh
+mac_explorer_installer=$(curl -fsSL https://raw.githubusercontent.com/qixiaoyu27/Mac-Explorer/refs/heads/main/native/scripts/install-native.sh) && /bin/bash -c "$mac_explorer_installer" -- --install-and-open
+```
 
-- 在分頁按右鍵即可複製分頁，新分頁會在右側開啟相同資料夾並保留選取項目。
-- 按住 `⌘` 點選網址列路徑中的資料夾，或透過右鍵選單，即可在新分頁開啟。切回原分頁可繼續瀏覽。
-- 在詳細資料檢視中，可從列內文字旁的空白拖曳框選多個項目。
-- 切換圖示大小後立即重新排列群組。將滑鼠停在圖示上，指標旁會顯示完整名稱。
+終端機會提示 Mac Explorer 未經 Apple 公證。輸入 `y` 並按下 Return，安裝程式會驗證下載套件，只移除本次安裝的 Mac Explorer 的下載隔離標記，然後自動開啟應用程式。已安裝相同版本但無法開啟時，也可以執行這條指令重新安裝。更新前請先結束應用程式，個人檔案和偏好設定會保留。
 
-日常版也支援資料夾優先排序、依修改日期分組、批次重新命名檔案和資料夾、字型大小與啟動位置設定，以及啟動時自動重新連線 SMB。已連線的 OneDrive 和 Box 資料夾可從側邊欄瀏覽，同步與離線保留由各自的用戶端管理。
+<sub>支援 macOS 13 及以上 · Apple Silicon（M 系列）。</sub>
 
-## 安裝
+<details>
+<summary>也可以手動安裝 DMG</summary>
 
-需要 Apple Silicon（M 系列）及 macOS 13 或以上。更新前先結束舊版，打開 DMG，將 **Mac Explorer Daily.app** 拖入「應用程式」。安裝包採用臨時簽署，未經 Apple 公證。請從[此儲存庫的 Releases](https://github.com/XIANG-z25/Mac-Explorer/releases/latest) 手動更新，該頁亦提供 SHA-256 校驗檔。
+1. 前往 [下載頁面](https://github.com/qixiaoyu27/Mac-Explorer/releases/latest)，選擇 **DMG** 安裝套件。
+2. 開啟 DMG，將 **Mac Explorer** 拖入 **Applications（應用程式）**。更新時請先結束舊版本。
+3. 開啟應用程式。若 macOS 因未經公證而阻止開啟，請確認下載來源後，在「系統設定 → 隱私權與安全性」中允許開啟。
 
-本版本以 [qixiaoyu27/Mac-Explorer](https://github.com/qixiaoyu27/Mac-Explorer) 為基礎，沿用 [GPL-3.0 授權](LICENSE)。如需從原始碼建置，請參閱[原生版開發文件](native/README.md)，並在儲存庫根目錄執行 `python3 -I native/scripts/build.py --personal`。
+</details>
+
+<details>
+<summary>從早期版本升級</summary>
+
+從早期 Electron 版升級時，執行上方指令即可。舊版應用程式內的更新器無法自動完成此次遷移。
+
+個人檔案不受影響。外觀、快速鍵和視窗工作階段等偏好需要重新設定；喜好項目可透過「設定 → 一般 → 從 Finder 匯入喜好項目」重新匯入。
+
+</details>
+
+## 日常所需，觸手可及
+
+檔案管理貫穿一天裡許多細小的時刻。找到剛下載的附件，確認一份文件，把整理好的資料交給同事——這些小事，值得一套順手的工具。
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <h3>瀏覽，井然有序</h3>
+      <p>資料在下載目錄，成品在專案資料夾，參考內容又放在另一處。用多個分頁保留各自的位置，沿目錄樹瀏覽，或輸入路徑直達目的地。</p>
+      <p>把常用資料夾釘選到快速存取，也能匯入 Finder 喜好項目，讓熟悉的位置隨手可達。</p>
+    </td>
+    <td width="50%" valign="top">
+      <h3>檢視，恰到好處</h3>
+      <p>挑照片時看大圖示，整理文件時看名稱、日期和大小。八種檢視適應不同內容，每個資料夾記住自己的配置與排序。</p>
+      <p>不確定是不是要找的檔案？按下空白鍵快速預覽，看過之後再決定。</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <h3>整理，順手完成</h3>
+      <p>把零散的下載歸檔，為文件改個清楚的名稱，將準備好的資料打包。剪下、貼上、拖放、重新命名與復原，延續熟悉的操作順序。</p>
+      <p>收到壓縮檔時，先瀏覽內容再決定解壓縮；需要分享時，也可以直接建立 ZIP。</p>
+    </td>
+    <td width="50%" valign="top">
+      <h3>習慣，由你定義</h3>
+      <p>喜歡明亮清晰，或習慣深色環境，都可以選擇，也可以跟隨系統。簡體中文、繁體中文與英文，讓介面用你熟悉的語言表達。</p>
+      <p>將常用操作留在工具列，把快速鍵調成順手的組合，讓工具配合你的節奏。</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <h3>不同位置，一處瀏覽</h3>
+      <p>本機文件、iCloud Drive、外接磁碟和網路共享，各有各的用途。用熟悉的導覽方式存取這些位置，減少來回尋找入口。</p>
+      <p>從個人資料到共享資料夾，讓日常整理有一個清晰的起點。</p>
+    </td>
+    <td width="50%" valign="top">
+      <h3>專案細節，隨時查看</h3>
+      <p>處理程式碼專案時，透過 Git / SVN 整合查看檔案狀態與差異，依需要完成版本管理操作。</p>
+      <p>不需要這些功能時，可以關閉偵測，將注意力留給眼前的檔案。</p>
+    </td>
+  </tr>
+</table>
+
+<br>
+
+## 熟悉，也尊重你的選擇
+
+### 和 Finder 一起，各得其所
+
+你可以繼續使用 Finder，也可以在需要目錄樹、多分頁或熟悉的剪下貼上流程時開啟 Mac Explorer。它們可以共存，不必一次改變所有習慣。資料夾存取權限仍由 macOS 管理，系統整合功能由你主動開啟。
+
+### 認真對待每一次整理
+
+檔案裡裝著工作成果，也可能是只拍過一次的照片。一般刪除會移至系統垃圾桶；複製、移動與解壓縮遇到同名檔案時，不會默默覆寫。處理檔案時，讓結果清楚、讓必要的確認被看見，是我們看重的基本體驗。
+
+### 免費開源，一起慢慢打磨
+
+你可以自由使用，也可以查看原始碼、提出改進或參與開發。一處不順手的互動、一則不夠清楚的提示，都值得被認真討論。我們希望在這些具體的小事裡，讓 Mac Explorer 越來越好用。
+
+<details>
+<summary>常用快速鍵</summary>
+
+| 操作 | 快速鍵 |
+| --- | --- |
+| 複製 / 剪下 / 貼上 | ⌘C / ⌘X / ⌘V |
+| 新增分頁 | ⌘T |
+| 前往資料夾 | ⇧⌘G |
+| 搜尋 | ⌘F |
+| 重新命名 | Return 或 F2 |
+| 快速查看 | Space |
+| 移至垃圾桶 | ⌘⌫ |
+| 開啟設定 | ⌘, |
+
+更多操作與自訂選項可在應用程式選單和設定中查看。
+
+</details>
+
+## 意見回饋與參與
+
+如果某個步驟讓你停下來想了想，或某個熟悉的操作還不夠順手，歡迎 [告訴我們](https://github.com/qixiaoyu27/Mac-Explorer/issues)。描述你當時想做什麼、遇到了什麼，會幫助我們理解問題；回報問題時，請附上應用程式與 macOS 版本、重現步驟，並隱去私人資訊。
+
+也歡迎參與程式碼、測試和文件改進，相關說明見 [開發文件](native/README.md) 與 [貢獻約定](AGENTS.md)。感謝每一位願意花時間試用、回饋和貢獻的人，讓這個專案一點點變得更完善。
+
+<details>
+<summary>版本策略</summary>
+
+<a id="版本策略"></a>
+
+採用 SemVer：相容修復更新 PATCH，相容功能更新 MINOR，不相容變更更新 MAJOR。版本號僅在正式發布到 GitHub 時更新，日常開發、測試和本機建置不遞增；已發布版本、tag 和附件不覆寫。
+
+</details>
+
+---
+
+[AGPL-3.0 開源授權](LICENSE) · 介面圖示包含 [Lucide artwork（ISC）](native/ICON-LICENSE.txt)

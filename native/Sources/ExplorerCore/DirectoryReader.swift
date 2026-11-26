@@ -9,7 +9,9 @@ public enum DirectoryReader {
     .fileSizeKey,
     .contentModificationDateKey,
     .creationDateKey,
+    .addedToDirectoryDateKey,
     .isHiddenKey,
+    .fileResourceIdentifierKey,
   ]
 
   /// Synchronous filesystem work; callers should run this away from the main thread.
@@ -80,7 +82,9 @@ public enum DirectoryReader {
           size: isDirectory ? 0 : Int64(values.fileSize ?? 0),
           modified: values.contentModificationDate,
           isHidden: (values.isHidden ?? false) || url.lastPathComponent.hasPrefix("."),
-          created: values.creationDate
+          created: values.creationDate,
+          resourceIdentifier: values.fileResourceIdentifier as? Data,
+          added: values.addedToDirectoryDate
         ))
       } catch {
         skippedCount += 1

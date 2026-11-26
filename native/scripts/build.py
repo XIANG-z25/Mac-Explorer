@@ -34,7 +34,7 @@ for script in ["install-native.sh", "update-native.sh"]:
 helpers = contents / "Helpers"
 helpers.mkdir(exist_ok=True)
 archive_helper = helpers / "archive-reader"
-subprocess.run(["xcrun", "clang", "-target", f"{platform.machine()}-apple-macos13.0", "-O2", "-Wall", "-Wextra", str(root / "Helpers" / "ArchiveReader.c"), "-larchive.2", "-o", str(archive_helper)], check=True)
+subprocess.run(["xcrun", "clang", "-target", f"{platform.machine()}-apple-macos13.0", "-O2", "-Wall", "-Wextra", str(root / "Helpers" / "ArchiveReader.c"), "-larchive.2", "-liconv", "-o", str(archive_helper)], check=True)
 subprocess.run(["codesign", "--force", "--sign", "-", str(archive_helper)], check=True)
 
 shutil.copy2(root / "Vendor" / "libsmb2" / "LICENCE-LGPL-2.1.txt", contents / "Resources" / "libsmb2-LICENSE.txt")
@@ -57,12 +57,17 @@ info = {
     "CFBundleDisplayName": "Mac Explorer Daily" if args.personal else "Mac Explorer",
     "CFBundlePackageType": "APPL",
     "CFBundleIconFile": "AppIcon.icns",
-    "CFBundleShortVersionString": "1.7.8" if args.personal else (root / "VERSION").read_text().strip(),
-    "CFBundleVersion": "2" if args.personal else "1",
+    "CFBundleShortVersionString": (root / "VERSION").read_text().strip(),
+    "CFBundleVersion": "1",
     "LSMinimumSystemVersion": "13.0",
     "NSHighResolutionCapable": True,
     "NSPrincipalClass": "NSApplication",
-    "CFBundleDocumentTypes": [{"CFBundleTypeName": "Files and Folders", "CFBundleTypeRole": "Viewer", "LSHandlerRank": "Alternate", "LSItemContentTypes": ["public.data", "public.folder", "public.volume", "public.text", "public.image", "public.audio", "public.movie", "public.archive", "com.adobe.pdf", "com.apple.package"]}],
+    "CFBundleDocumentTypes": [{
+        "CFBundleTypeName": "Files and Folders",
+        "CFBundleTypeRole": "Viewer",
+        "LSHandlerRank": "Alternate",
+        "LSItemContentTypes": ["public.data", "public.folder", "public.volume", "public.text", "public.image", "public.audio", "public.movie", "public.archive", "com.adobe.pdf", "com.apple.package", "com.microsoft.windows-executable"],
+    }],
     "NSLocalNetworkUsageDescription": "查找附近设备并连接局域网共享电脑和文件服务器。",
     "NSBonjourServices": ["_smb._tcp"],
     "NSDesktopFolderUsageDescription": "浏览桌面中的文件。",

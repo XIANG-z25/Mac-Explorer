@@ -14,46 +14,6 @@ enum NativeSmoke {
       checks.append(name)
     }
     do {
-      if ProcessInfo.processInfo.arguments.contains("--smoke-transfer-window") {
-        checks += try await NativeTransferPanelChecks.run()
-        try write(["passed": true, "checks": checks], to: report); NSApp.terminate(nil); return
-      }
-      let mountedReadOnly = ProcessInfo.processInfo.arguments.contains("--smoke-mounted-readonly")
-      if mountedReadOnly || ProcessInfo.processInfo.arguments.contains("--smoke-mounted-writable") {
-        func row() -> ExplorerSidebarRow? {
-          browser.sidebarDocument.subviews.compactMap { $0 as? ExplorerSidebarRow }.first { $0.toolTip == browser.directory.path }
-        }
-        let initialRow = row()
-        try expect(initialRow != nil, "The mounted volume is listed in the sidebar")
-        NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.didMountNotification, object: NSWorkspace.shared)
-        try expect(row() != nil && row() !== initialRow, "A mount notification refreshes the sidebar immediately")
-        try expect(browser.status.stringValue.contains(NL("磁盘以只读方式挂载")) == mountedReadOnly &&
-          browser.newButton.isEnabled != mountedReadOnly, "The mounted volume uses the correct write controls")
-        let volumePath = browser.directory.path
-        let volumes = try await Task.detached { try NativeVolumes.list() }.value
-        try expect(volumes.contains { $0.path == volumePath }, "The volume also appears in This PC")
-        if ProcessInfo.processInfo.arguments.contains("--smoke-eject-menu") {
-          guard let drive = row(), let event = NSEvent.mouseEvent(with: .rightMouseDown, location: drive.convert(NSPoint(x: 10, y: 10), to: nil), modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1) else {
-            throw Failure(description: "Missing sidebar drive")
-          }
-          drive.onContext?(event)
-          func containsEject(_ view: NSView) -> Bool {
-            view.accessibilityLabel() == NL("安全弹出") || view.subviews.contains(where: containsEject)
-          }
-          try expect((window.childWindows ?? []).compactMap(\.contentView).contains(where: containsEject), "The sidebar drive offers Safely Eject")
-          ExplorerMenu.dismiss()
-          try expect(try NativeVolumes.ejectable(browser.directory, among: volumes).path == volumePath, "The exact mount is a valid eject target")
-        }
-        try write(["passed": true, "checks": checks], to: report); NSApp.terminate(nil); return
-      }
-      if ProcessInfo.processInfo.arguments.contains("--smoke-address-tabs") {
-        checks += try await NativeAddressTabChecks.run(source: browser)
-        try write(["passed": true, "checks": checks], to: report); NSApp.terminate(nil); return
-      }
-      if ProcessInfo.processInfo.arguments.contains("--smoke-pointer") {
-        checks += try await NativePointerChecks.run(output: report.deletingLastPathComponent())
-        try write(["passed": true, "checks": checks], to: report); NSApp.terminate(nil); return
-      }
       if let index = CommandLine.arguments.firstIndex(of: "--quit-session-suite"), CommandLine.arguments.indices.contains(index + 1) {
         try await NativeQuitChecks.child(browser: browser, window: window, root: root, suite: CommandLine.arguments[index + 1], report: report)
         return
@@ -76,6 +36,27 @@ enum NativeSmoke {
         checks += try await NativeNavigationStateChecks.run()
         try write(["passed": true, "checks": checks], to: report)
         NSApp.terminate(nil); return
+      }
+      if ProcessInfo.processInfo.arguments.contains("--smoke-lifecycle") {
+        checks += try await NativeLifecycleChecks.run(source: browser)
+        try write(["passed": true, "checks": checks], to: report)
+        NSApp.terminate(nil); return
+      }
+      if ProcessInfo.processInfo.arguments.contains("--smoke-address-tabs") {
+        checks += try await NativeAddressTabChecks.run(source: browser)
+        try write(["passed": true, "checks": checks], to: report)
+        NSApp.terminate(nil); return
+      }
+      if ProcessInfo.processInfo.arguments.contains("--smoke-context-menu-input") {
+        try await until { !browser.loading && browser.entries.count >= 3 }
+        checks += try NativeSelectionChecks.runContextMenuInput(browser: browser, window: window)
+        try write(["passed": true, "checks": checks], to: report)
+        NSApp.terminate(nil); return
+      }
+      if ProcessInfo.processInfo.arguments.contains("--smoke-file-scrollbars") {
+        try await until { !browser.loading && browser.entries.count >= 100 }
+        checks += try await NativeColumnChecks.runScrollbars(browser: browser, window: window)
+        try write(["passed": true, "checks": checks], to: report); NSApp.terminate(nil); return
       }
       if ProcessInfo.processInfo.arguments.contains("--smoke-vcs-edit") {
         checks += try await NativeVCSEditingChecks.run()
@@ -119,6 +100,18 @@ enum NativeSmoke {
       try expect(IconLoader.shared.loads < 150, "initial icon requests are bounded by visible rows")
       try expect(browser.entries.first?.isDirectory == true, "folders precede files")
       try expect(!browser.entries.contains { $0.name == ".hidden-fixture" }, "hidden entries excluded initially")
+      window.makeFirstResponder(browser.table)
+      browser.table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+      func shiftArrow(_ code: UInt16) {
+        guard let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .shift,
+                                          timestamp: 0, windowNumber: window.windowNumber, context: nil,
+                                          characters: "", charactersIgnoringModifiers: "", isARepeat: false, keyCode: code) else { return }
+        browser.table.keyDown(with: event)
+      }
+      shiftArrow(125); shiftArrow(125)
+      try expect(browser.table.selectedRowIndexes == [0, 1, 2], "Browser Shift Down projects the shared range")
+      shiftArrow(126)
+      try expect(browser.table.selectedRowIndexes == [0, 1], "Browser Shift Up contracts the shared range")
       browser.table.selectRowIndexes(IndexSet([0, 1]), byExtendingSelection: false)
       try expect(browser.selectedPaths.count == 2, "native table multi-selection updates the model")
       let selected = browser.selectedPaths
@@ -126,8 +119,41 @@ enum NativeSmoke {
       try await until { !browser.collection.visibleItems().isEmpty && IconLoader.shared.isIdle }
       try expect(browser.selectedPaths == selected && browser.collection.selectionIndexPaths.count == 2, "selection survives details-to-icons switch")
       try expect(browser.collection.visibleItems().count < 150, "collection reuses visible items")
+      func shiftIconArrow(_ code: UInt16) {
+        guard let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .shift,
+                                          timestamp: 0, windowNumber: window.windowNumber, context: nil,
+                                          characters: "", charactersIgnoringModifiers: "", isARepeat: false, keyCode: code) else { return }
+        browser.collection.keyDown(with: event)
+      }
+      shiftIconArrow(124)
+      try expect(browser.collection.selectionIndexPaths.map(\.item).sorted() == [0, 1, 2], "Icon Shift Right extends the anchor inherited from Details")
+      shiftIconArrow(123)
+      try expect(browser.selectedPaths == selected, "Icon Shift Left contracts to the original selection")
+      browser.setView(.details); browser.setGrouping(.kind)
+      let fileDragURLs: [URL], fileDragPaths: Set<String>
+      if let groupRow = browser.displayRows.firstIndex(where: { $0.group != nil }) {
+        browser.toggleGroup(at: groupRow)
+        try expect(browser.selectedPaths == selected && browser.table.selectedRowIndexes.isEmpty, "Collapsed selection remains available to file commands")
+        guard let visibleFile = browser.displayRows.compactMap(\.entry).first else {
+          throw Failure(description: "The drag fixture needs a visible file beside the collapsed group")
+        }
+        fileDragPaths = selected.union([browser.entries[visibleFile].id])
+        browser.selectedPaths = fileDragPaths
+        fileDragURLs = browser.itemActionsManager.draggedURLs?() ?? []
+        browser.selectAllFiles()
+        try expect(browser.selectedEntries().count == 10_003 && browser.table.selectedRowIndexes.count < 10_003, "Select All includes collapsed files without projecting hidden rows")
+      } else { throw Failure(description: "Grouping creates headers for the selection fixture") }
+      browser.setGrouping(.none); browser.selectedPaths = selected; browser.setView(.icons)
+      checks += try await NativeSelectionChecks.runFileMarquee(browser: browser, window: window)
+      checks += try await NativeColumnChecks.runScrollbars(browser: browser, window: window)
+      if ProcessInfo.processInfo.arguments.contains("--smoke-selection") {
+        checks += try NativeSelectionChecks.run()
+        checks.append(try NativeSelectionChecks.runAppKitFileDrag(window: window, urls: fileDragURLs, expectedPaths: fileDragPaths))
+        try write(["passed": true, "checks": checks, "metrics": metrics], to: report)
+        NSApp.terminate(nil); return
+      }
       let menu = browser.viewMenu()
-      try expect(menu.map(\.title) == ["超大图标", "大图标", "中图标", "小图标", "列表", "详细信息", "平铺", "内容", "列", "详细信息窗格", "预览窗格", "显示", "分组依据", "应用到所有文件夹"], "View menu preserves layout order, column customization and grouping")
+      try expect(menu.map(\.title) == ["超大图标", "大图标", "中图标", "小图标", "列表", "详细信息", "平铺", "内容", "列", "详细信息窗格", "预览窗格", "显示", "分组依据", "应用到所有文件夹"], "View menu preserves layout order and includes column customization")
       for index in [0, 1, 2, 3, 4, 6, 7] {
         menu[index].action?()
         window.contentView?.layoutSubtreeIfNeeded()
@@ -249,7 +275,7 @@ enum NativeSmoke {
       window.setContentSize(NSSize(width: 920, height: 540))
       try await Task.sleep(nanoseconds: 100_000_000)
       window.contentView?.layoutSubtreeIfNeeded()
-      try expect(browser.content.bounds.height > 300 && browser.address.bounds.width > 250, "compact window preserves navigation and usable file area")
+      try expect(browser.content.bounds.height > 300 && browser.addressBar.editBox.bounds.width > 250, "compact window preserves navigation and usable file area")
       try capture(window, at: report.deletingLastPathComponent().appendingPathComponent("native-compact.png"))
       NSApp.appearance = nil
       checks += try await NativeParityChecks.run(source: browser, output: report.deletingLastPathComponent())
@@ -263,9 +289,6 @@ enum NativeSmoke {
       checks += try await NativeNetworkDeleteChecks.run(output: report.deletingLastPathComponent())
       checks += try await NativeLifecycleChecks.run(source: browser)
       checks += try await NativeStartLocationChecks.run(output: report.deletingLastPathComponent())
-      checks += try await NativeAddressTabChecks.run(source: browser)
-      checks += try await NativeSearchChecks.run()
-      checks += try await NativePointerChecks.run(output: report.deletingLastPathComponent())
       checks += try await NativeVCSUIChecks.run(parent: window)
       checks += try await NativeVCSEditingChecks.run()
       checks += try await NativePaneChecks.run()
@@ -275,16 +298,16 @@ enum NativeSmoke {
       checks += try await NativeTransferPanelChecks.run()
       checks += try await NativeSMBTransferChecks.run(output: report.deletingLastPathComponent())
       checks += try await NativeLanguageChecks.run()
+      checks += try await NativeAddressTabChecks.run(source: browser)
       checks += try await NativeVolumeChecks.run(output: report.deletingLastPathComponent())
       checks += try NativeShortcutChecks.run()
       checks += try await NativePrivacyChecks.run()
       checks += try await NativeTerminalChecks.run(browser: browser, output: report.deletingLastPathComponent())
       checks += try await NativeAirDropUIChecks.run()
       browser.navigate(to: root)
-      // Interaction checks can leave hidden files enabled; the fixture contains
-      // exactly one hidden file in addition to the 10,003 visible entries.
-      try await until { !browser.loading && browser.entries.count == (browser.showHidden ? 10_004 : 10_003) }
+      try await until { !browser.loading && browser.entries.count == 10_003 }
       metrics["iconLoadsAfterAllInteractions"] = IconLoader.shared.loads
+      checks.append(try NativeSelectionChecks.runAppKitFileDrag(window: window, urls: fileDragURLs, expectedPaths: fileDragPaths))
       try write(["passed": true, "checks": checks, "metrics": metrics], to: report)
       NSApp.terminate(nil)
     } catch {
@@ -344,7 +367,7 @@ enum NativeSmoke {
         button.performClick(nil); try await Task.sleep(nanoseconds: 100_000_000)
         if title == "关于" {
           let text = dialogText(window).joined(separator: "\n")
-          guard text.contains("尚未检查更新"), text.contains("GPL-3.0-only"), !text.contains("当前版本："),
+          guard text.contains("尚未检查更新"), text.contains("AGPL-3.0-only"), !text.contains("当前版本："),
                 ["项目主页", "GitHub 发布页", "问题反馈", "开源许可", "检查更新"].allSatisfy({ title in dialogButtons(window).contains { $0.title == title } })
           else { throw Failure(description: "About page is missing migrated content") }
         }
@@ -369,20 +392,31 @@ enum NativeSmoke {
       try capture(window, at: output.appendingPathComponent("native-properties.png")); try dismissDialog(window)
       let areas: [String: NSView] = [".tab-strip": browser.tabsBar, ".navigation-bar": browser.navigationBar, ".command-bar": browser.commandBar, ".sidebar": browser.sidebar, ".file-content": browser.content, ".status-bar": browser.footer, ".address-bar": browser.addressBar, ".search-box": browser.searchBox]
       let geometry = areas.mapValues { area in let rect = area.convert(area.bounds, to: browser.view); return ["x": rect.minX, "y": rect.minY, "width": rect.width, "height": rect.height] }
-      if let index = browser.entries.firstIndex(where: { $0.name == "产品需求.md" }) {
-        browser.table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
+      if let index = browser.entries.firstIndex(where: { $0.name == "产品需求.md" }),
+         let row = (0..<browser.table.numberOfRows).first(where: { browser.entryIndex(at: $0) == index }) {
+        browser.table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
         browser.executeAction("details-pane")
         try await Task.sleep(nanoseconds: 300_000_000)
         try capture(window, at: output.appendingPathComponent("native-details-pane.png"))
         browser.executeAction("details-pane")
-        let items = browser.contextItems(), quickNames = ["剪切", "复制", "重命名", "移到回收站"]
-        ExplorerMenu.show(items.filter { !quickNames.contains($0.title) }, at: NSPoint(x: window.frame.midX, y: window.frame.midY + 180), owner: window, quickActions: quickNames.compactMap { name in items.first { $0.title == name } })
+        browser.table.scrollRowToVisible(row)
+        window.contentView?.layoutSubtreeIfNeeded()
+        let point = browser.table.convert(NSPoint(x: 70, y: browser.table.rect(ofRow: row).midY), to: nil)
+        guard let click = NSEvent.mouseEvent(with: .rightMouseDown, location: point, modifierFlags: [],
+                                             timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                                             context: nil, eventNumber: 0, clickCount: 1, pressure: 1)
+        else { throw Failure(description: "Cannot create the context-menu click") }
+        _ = browser.table.menu(for: click)
+        guard window.childWindows?.contains(where: { $0 is NSPanel && $0.isVisible }) == true else {
+          throw Failure(description: "File context menu did not open for capture")
+        }
         try capture(window, at: output.appendingPathComponent("native-context.png")); ExplorerMenu.dismiss()
       }
       let appItems = ["Finder（默认）", "Visual Studio Code", "Books", "ChatGPT", "Mac Explorer", "选择其他应用"].map { ExplorerMenuItem(title: $0, icon: "applications") }
-      let appWidth = ExplorerMenu.fittedWidth(appItems, submenu: true)
-      guard appWidth >= 180 && appWidth < 230,
-            ExplorerMenu.fittedWidth([ExplorerMenuItem(title: "复制", shortcut: "⌃⌥⇧⌘C")], submenu: true) >= 180 else { throw Failure(description: "Submenu must fit measured labels and shortcuts") }
+      let appWidth = ExplorerMenu.fittedWidth(appItems)
+      let shortcutItem = ExplorerMenuItem(title: "Copy selected file path", shortcut: "⌃⌥⇧⌘C")
+      guard appWidth > 136 && appWidth < 180,
+            ExplorerMenu.fittedWidth([shortcutItem]) > ExplorerMenu.fittedWidth([ExplorerMenuItem(title: shortcutItem.title)]) else { throw Failure(description: "Submenu must fit measured labels and shortcuts") }
       ExplorerMenu.show([ExplorerMenuItem(title: "打开方式", children: appItems)], at: NSPoint(x: window.frame.midX, y: window.frame.midY + 180), owner: window)
       if let menu = window.childWindows?.last, let down = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: menu.windowNumber, context: nil, characters: "", charactersIgnoringModifiers: "", isARepeat: false, keyCode: 125) { NSApp.sendEvent(down) }
       try await Task.sleep(nanoseconds: 100_000_000)
@@ -500,7 +534,7 @@ enum NativeSmoke {
       try await Task.sleep(nanoseconds: 20_000_000)
     }
   }
-  static func capture(_ window: NSWindow, at url: URL) throws {
+  private static func capture(_ window: NSWindow, at url: URL) throws {
     guard let view = window.contentView else { throw Failure(description: "No window content") }
     view.layoutSubtreeIfNeeded()
     view.displayIfNeeded()

@@ -22,7 +22,7 @@ with tempfile.TemporaryDirectory(prefix="explorer-native-checks-") as temporary:
         extra = [root / "Sources" / "MacExplorerNative" / "QuickAccessState.swift"] if name in ["QuickAccessChecks", "LatestCoreChecks"] else []
         executable = pathlib.Path(temporary) / name
         subprocess.run([
-            "xcrun", "swiftc", "-parse-as-library", "-swift-version", "5", "-O", "-suppress-warnings",
+            "xcrun", "swiftc", "-parse-as-library", "-swift-version", "5", "-O",
             "-target", f"{platform.machine()}-apple-macos13.0",
             *(["-D", "EXPLORER_DELETION_TESTS"] if name == "NetworkDeletionChecks" else []),
             *map(str, sources + extra), str(root / "scripts" / f"{name}.swift"), "-o", str(executable),

@@ -31,7 +31,123 @@ enum NativeWorkflowChecks {
       window.contentView?.layoutSubtreeIfNeeded(); browser.collection.layoutSubtreeIfNeeded()
     }
     func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
+    func checkSelectionAlignment(_ field: NSTextField, _ editor: NSTextView, context: String) throws {
+      guard let layout = editor.layoutManager, let container = editor.textContainer else {
+        throw NativeSmoke.Failure(description: "\(context): missing text layout")
+      }
+      layout.ensureLayout(for: container)
+      let glyphs = layout.glyphRange(forCharacterRange: editor.selectedRange(), actualCharacterRange: nil)
+      let line = layout.lineFragmentRect(forGlyphAt: glyphs.location, effectiveRange: nil)
+        .offsetBy(dx: editor.textContainerOrigin.x, dy: editor.textContainerOrigin.y)
+      let fieldLine = field.convert(line, from: editor)
+      try check(abs(fieldLine.midY - field.bounds.midY) <= 1, "\(context): selection is vertically centered (line: \(fieldLine), field: \(field.bounds))")
+    }
     try await until { !browser.loading && browser.entries.count == 91 }
+    let ordinaryCheck = MenuLayout([ExplorerMenuItem(title: "Check", checked: true)])
+    let ordinaryRadio = MenuLayout([ExplorerMenuItem(title: "Radio", checked: true, radio: true)])
+    try check(ordinaryCheck.titleX == 35 && ordinaryRadio.titleX == 28,
+              "Check-only and radio-only menus place text at x=35 and x=28 respectively")
+    let detailsTitle = NL("详细信息窗格"), previewTitle = NL("预览窗格")
+    let closedLayout = MenuLayout(browser.viewMenu())
+    for (command, expectedSelection) in [(detailsTitle, [detailsTitle]), (previewTitle, [previewTitle]), (previewTitle, [])] {
+      guard let action = browser.viewMenu().first(where: { $0.title == command })?.action else {
+        throw NativeSmoke.Failure(description: "Missing View menu command: \(command)")
+      }
+      action()
+      let menu = browser.viewMenu()
+      let panes = menu.filter { $0.title == detailsTitle || $0.title == previewTitle }
+      let layout = MenuLayout(menu)
+      try check(panes.count == 2 && panes.allSatisfy(\.radio) && panes.filter { $0.checked == true }.map(\.title) == expectedSelection,
+                "View menu pane selection matches \(expectedSelection)")
+      try check(layout.iconX == closedLayout.iconX && layout.titleX == closedLayout.titleX,
+                "View menu icons and titles stay aligned for pane selection \(expectedSelection)")
+    }
+    do {
+      let savedOptions = (browser.navigationPane, browser.compact, browser.checkboxes, browser.extensions, browser.showHidden)
+      defer { (browser.navigationPane, browser.compact, browser.checkboxes, browser.extensions, browser.showHidden) = savedOptions }
+      (browser.navigationPane, browser.compact, browser.checkboxes, browser.extensions, browser.showHidden) = (false, false, false, false, false)
+      func showOptions() -> [ExplorerMenuItem] { browser.viewMenu().first { $0.title == NL("显示") }?.children ?? [] }
+      let allOff = showOptions()
+      try check(allOff.count == 5 && allOff.allSatisfy { $0.checked == false }, "Show submenu starts with five unchecked toggles")
+      let baseline = MenuLayout(allOff)
+      for enabled in [true, false] {
+        browser.extensions = enabled
+        let options = showOptions()
+        let layout = MenuLayout(options)
+        try check(options.first { $0.title == NL("文件扩展名") }?.checked == enabled
+                  && layout.iconX == baseline.iconX && layout.titleX == baseline.titleX,
+                  "Show submenu keeps its columns when file extensions are \(enabled)")
+      }
+    }
+    do {
+      let savedOrder = browser.ascending
+      defer { browser.ascending = savedOrder }
+      for ascending in [true, false] {
+        browser.ascending = ascending
+        let menu = browser.sortMenu()
+        let directions = menu.filter { [NL("递增"), NL("递减")].contains($0.title) }
+        try check(directions.count == 2 && directions.allSatisfy(\.radio)
+                  && directions.filter { $0.checked == true }.map(\.title) == [ascending ? NL("递增") : NL("递减")]
+                  && menu.first { $0.title == NL("文件夹优先") }?.radio == false,
+                  "Sort direction uses mutually exclusive radio marks with ascending \(ascending)")
+      }
+    }
+    let hiddenOff = MenuLayout(browser.contextItems())
+    browser.showHidden = true
+    let hiddenOnItems = browser.contextItems()
+    browser.showHidden = false
+    let hiddenOn = MenuLayout(hiddenOnItems)
+    try check(hiddenOff.iconX == 12 && hiddenOff.titleX == 39 && hiddenOn.iconX == 12 && hiddenOn.titleX == 39
+              && MenuLayout.iconSize == 16 && hiddenOn.fittedWidth() == hiddenOff.fittedWidth(),
+              "File background context keeps a 16-point icon at x=12 and text at x=39 with hidden items on or off")
+    guard let hiddenItem = hiddenOnItems.first(where: { $0.title == NL("隐藏的项目") }) else {
+      throw NativeSmoke.Failure(description: "Missing hidden-items command in the file background context menu")
+    }
+    try check(hiddenItem.showsSelectionInIconColumn && hiddenOn.selectionMarkFrame(for: hiddenItem, midY: 16).midX == 20,
+              "Hidden-items checkmark is centered in the existing icon column")
+    let breadcrumbs = browser.addressBar.breadcrumbBar
+    let volume = URL(fileURLWithPath: "/Volumes/Test Drive", isDirectory: true)
+    let rootDropdown = breadcrumbs.dropdownItems([("Test Drive", volume)], directory: nil)
+    let rootDropdownLayout = MenuLayout(rootDropdown)
+    try check(rootDropdown.contains { $0.title == "Test Drive" && $0.icon == "drive" }
+              && rootDropdown.allSatisfy { $0.checked == nil }
+              && rootDropdownLayout.iconX == 12 && rootDropdownLayout.titleX == 39,
+              "Breadcrumb root dropdown has no selection column")
+    let childDropdown = breadcrumbs.dropdownItems([("Folder", folder)], directory: root)
+    let childDropdownLayout = MenuLayout(childDropdown)
+    try check(childDropdown.count == 1 && childDropdown[0].checked == nil
+              && childDropdownLayout.iconX == 12 && childDropdownLayout.titleX == 39,
+              "Breadcrumb child dropdown has no selection column when no entry is on the current path")
+    let parent = root.deletingLastPathComponent()
+    let sibling = parent.appendingPathComponent("Other Folder", isDirectory: true)
+    let parentDropdown = breadcrumbs.dropdownItems([("Current Folder", root), ("Other Folder", sibling)], directory: parent)
+    try check(parentDropdown.map(\.checked) == [true, nil] && MenuLayout(parentDropdown).iconX == 35,
+              "Breadcrumb ancestor dropdown reserves a selection column and marks only the current path")
+    let addressMenu = breadcrumbs.contextMenuItems()
+    try check(addressMenu.map(\.title) == [NL("复制地址"), NL("将地址复制为文本"), NL("编辑地址"), NL("删除历史记录")]
+              && addressMenu.allSatisfy { $0.icon == nil && $0.applicationImage == nil && $0.checked == nil && !$0.radio && !$0.divider },
+              "The address context menu contains four consecutive text commands")
+    let addressLayout = MenuLayout(addressMenu, style: .addressContext)
+    let addressRowX = MenuLayout.panelInset + addressLayout.rowInset
+    try check(addressRowX == 5 && addressLayout.highlightInset == 0 && addressRowX + addressLayout.titleX == 16,
+              "Address context row and highlight start at x=5 and text at x=16 from the panel edge")
+    let sidebarRow = ExplorerSidebarRow(title: "Folder", icon: "folder") {}
+    sidebarRow.selected = true
+    for height: CGFloat in [32, 36, 40] {
+      sidebarRow.frame.size.height = height
+      guard let bitmap = sidebarRow.bitmapImageRepForCachingDisplay(in: sidebarRow.bounds) else {
+        throw NativeSmoke.Failure(description: "Cannot render sidebar selection")
+      }
+      sidebarRow.cacheDisplay(in: sidebarRow.bounds, to: bitmap)
+      let x = Int(1.5 * CGFloat(bitmap.pixelsWide) / sidebarRow.bounds.width)
+      let middle = bitmap.pixelsHigh / 2
+      let indicatorColor = bitmap.colorAt(x: x, y: middle)
+      let indicatorPixels = (0..<bitmap.pixelsHigh).filter { bitmap.colorAt(x: x, y: $0) == indicatorColor }
+      let center = CGFloat((indicatorPixels.first ?? 0) + (indicatorPixels.last ?? 0) + 1) / 2
+      let renderedHeight = CGFloat(indicatorPixels.count) * height / CGFloat(bitmap.pixelsHigh)
+      try check(abs(center - CGFloat(bitmap.pixelsHigh) / 2) <= 0.5 && abs(renderedHeight - 17) <= 1,
+                "Sidebar selection indicator is centered in the \(Int(height))-point row")
+    }
     try check(browser.groupMode == .none && browser.displayRows.count == browser.entries.count, "Grouping starts disabled")
     try check(browser.viewMenu().contains { $0.title == NL("分组依据") } && !browser.sortMenu().contains { $0.title == NL("分组依据") }, "Grouping is offered in View")
     for layout in [ExplorerLayoutMode.details, .icons, .list, .tiles, .content] {
@@ -49,10 +165,13 @@ enum NativeWorkflowChecks {
       }
       let row = browser.displayRows.firstIndex { $0.group != nil }!
       let group = browser.groups[browser.groupIndex(at: row)!]
-      browser.selectedPaths = Set(group.entries.map(\.id)); browser.toggleGroup(at: row)
-      try check(browser.selectedPaths.isEmpty && browser.displayRows.compactMap(\.entry).count == 91 - group.entries.count, "\(layout): collapse clears hidden selection")
+      let groupPaths = Set(group.entries.map(\.id))
+      browser.selectedPaths = groupPaths; browser.toggleGroup(at: row)
+      let visibleSelectionCount = layout == .details ? browser.table.selectedRowIndexes.count : browser.collection.selectionIndexPaths.count
+      try check(browser.selectedPaths == groupPaths && visibleSelectionCount == 0 &&
+                browser.displayRows.compactMap(\.entry).count == 91 - group.entries.count, "\(layout): collapse preserves selection and removes hidden rows from the view")
       browser.selectAllFiles()
-      try check(browser.selectedEntries().count == 91 - group.entries.count, "\(layout): Select All excludes collapsed items")
+      try check(browser.selectedEntries().count == 91, "\(layout): Select All includes collapsed items")
       browser.toggleGroup(at: row)
     }
     browser.checkboxes = true; browser.setView(.details); browser.setGrouping(.none); window.contentView?.layoutSubtreeIfNeeded()
@@ -88,10 +207,10 @@ enum NativeWorkflowChecks {
     window.pointer = browser.table.convert(NSPoint(x: rowFrame.minX + 100, y: rowFrame.midY), to: nil)
     firstRow.mouseEntered(with: hoverEvent)
     try check(firstRow.hovered, "The row under the pointer receives a hover background")
-    let tableOrigin = browser.tableScroll.contentView.bounds.origin
+    let tableOrigin = browser.fileScroll.contentView.bounds.origin
     for offset: CGFloat in [8, 16, 3, 0] {
-      browser.tableScroll.contentView.scroll(to: NSPoint(x: tableOrigin.x, y: tableOrigin.y + offset * browser.table.rowHeight))
-      browser.tableScroll.reflectScrolledClipView(browser.tableScroll.contentView); window.contentView?.layoutSubtreeIfNeeded()
+      browser.fileScroll.contentView.scroll(to: NSPoint(x: tableOrigin.x, y: tableOrigin.y + offset * browser.table.rowHeight))
+      browser.fileScroll.reflectScrolledClipView(browser.fileScroll.contentView); window.contentView?.layoutSubtreeIfNeeded()
       let visible = browser.table.rows(in: browser.table.visibleRect)
       let rows = (visible.location..<NSMaxRange(visible)).compactMap { browser.table.rowView(atRow: $0, makeIfNecessary: true) as? FileRowView }
       firstRow.updateTrackingAreas(); rows.forEach { $0.updateTrackingAreas() }
@@ -100,10 +219,12 @@ enum NativeWorkflowChecks {
       let hovered = rows.filter(\.hovered)
       try check(hovered.count == 1 && hovered.first === targetView && firstRow.hovered == (firstRow === targetView), "Details scroll offset \(offset): only the row currently under the stationary pointer stays hovered")
     }
+    let originalSize = window.contentView!.bounds.size
+    window.setContentSize(NSSize(width: 900, height: 500))
     for mode in [ExplorerLayoutMode.icons, .list, .tiles, .content] {
       browser.setView(mode, size: 64); window.contentView?.layoutSubtreeIfNeeded()
-      let clip = browser.collectionScroll.contentView
-      clip.scroll(to: .zero); browser.collectionScroll.reflectScrolledClipView(clip); browser.collection.layoutSubtreeIfNeeded()
+      let clip = browser.fileScroll.contentView
+      clip.scroll(to: .zero); browser.fileScroll.reflectScrolledClipView(clip); browser.collection.layoutSubtreeIfNeeded()
       let firstPath = browser.collection.indexPathsForVisibleItems().min { $0.item < $1.item }!
       let first = browser.collection.item(at: firstPath)!.view as! ItemSurface
       window.pointer = first.convert(NSPoint(x: first.bounds.midX, y: first.bounds.midY), to: nil)
@@ -113,7 +234,7 @@ enum NativeWorkflowChecks {
       try check(extent > 0, "\(mode): the hover fixture genuinely scrolls")
       for fraction: CGFloat in [0.35, 0.75, 0.15, 0] {
         clip.scroll(to: mode == .list ? NSPoint(x: extent * fraction, y: 0) : NSPoint(x: 0, y: extent * fraction))
-        browser.collectionScroll.reflectScrolledClipView(clip); browser.collection.layoutSubtreeIfNeeded()
+        browser.fileScroll.reflectScrolledClipView(clip); browser.collection.layoutSubtreeIfNeeded()
         let surfaces = browser.collection.visibleItems().map(\.view).compactMap { $0 as? ItemSurface }
         first.updateTrackingAreas(); surfaces.forEach { $0.updateTrackingAreas() }
         let targetPath = browser.collection.indexPathForItem(at: browser.collection.convert(window.pointer, from: nil))
@@ -133,23 +254,29 @@ enum NativeWorkflowChecks {
       surfaces.forEach { $0.updateTrackingAreas() }
       try check(!surfaces.contains(where: \.hovered), "\(mode): leaving the file area clears every hover background")
     }
+    window.setContentSize(originalSize)
     window.pointerIsActive = false
     try check(browser.selectedPaths == hoverSelection, "Scrolling and hover tracking preserve the selected files")
     browser.setView(.details)
     browser.setGrouping(.modified)
     let selected = browser.entries.last!.id
     browser.selectedPaths = [selected]; browser.updateMode(persist: false)
-    browser.tableScroll.contentView.scroll(to: NSPoint(x: 0, y: 1200)); browser.tableScroll.reflectScrolledClipView(browser.tableScroll.contentView)
-    let originalOffset = browser.tableScroll.contentView.bounds.origin
+    browser.fileScroll.contentView.scroll(to: NSPoint(x: 0, y: 1200)); browser.fileScroll.reflectScrolledClipView(browser.fileScroll.contentView)
+    let originalOffset = browser.fileScroll.contentView.bounds.origin
     browser.openTab(at: folder); try await until { !browser.loading && browser.directory.path == folder.path }
     try check(browser.groupMode == .none, "A different folder retains its independent grouping preference")
     browser.closeTab(); try await until { !browser.loading && browser.directory.path == root.path }
-    try check(browser.groupMode == .modified && browser.selectedPaths == [selected] && abs(browser.tableScroll.contentView.bounds.origin.y - originalOffset.y) < 2, "Returning to a grouped tab restores its scroll and selection; mode=\(browser.groupMode), selection=\(browser.selectedPaths), before=\(originalOffset), after=\(browser.tableScroll.contentView.bounds.origin)")
-    for fileView in [browser.table as NSView, browser.collection as NSView] {
+    try check(browser.groupMode == .modified && browser.selectedPaths == [selected] && abs(browser.fileScroll.contentView.bounds.origin.y - originalOffset.y) < 2, "Returning to a grouped tab restores its scroll and selection; mode=\(browser.groupMode), selection=\(browser.selectedPaths), before=\(originalOffset), after=\(browser.fileScroll.contentView.bounds.origin)")
+    for mode in [ExplorerLayoutMode.details, .icons] {
+      browser.setView(mode)
+      let fileView = browser.fileScroll.documentView
       var renamed = false, opened = false
       let key = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36)!
-      if let table = fileView as? FileTableView { let rename = table.renameSelection, open = table.openSelection; table.renameSelection = { renamed = true }; table.openSelection = { opened = true }; table.keyDown(with: key); table.renameSelection = rename; table.openSelection = open }
-      if let collection = fileView as? FileCollectionView { let rename = collection.renameSelection, open = collection.openSelection; collection.renameSelection = { renamed = true }; collection.openSelection = { opened = true }; collection.keyDown(with: key); collection.renameSelection = rename; collection.openSelection = open }
+      let open = browser.itemActionsManager.openSelection
+      browser.itemActionsManager.openSelection = { opened = true }
+      defer { browser.itemActionsManager.openSelection = open }
+      if let table = fileView as? FileTableView { let rename = table.renameSelection; table.renameSelection = { renamed = true }; table.keyDown(with: key); table.renameSelection = rename }
+      if let collection = fileView as? FileCollectionView { let rename = collection.renameSelection; collection.renameSelection = { renamed = true }; collection.keyDown(with: key); collection.renameSelection = rename }
       try check(renamed && !opened, "Return retains the existing rename action")
     }
     let filenameFixtures = ["数字员工平台需求说明.docx", "Codex 实施文档与数字员工平台系统运行流程和配置说明（修订版）.md", String(repeating: "LongFileName", count: 6) + ".txt"]
@@ -190,6 +317,7 @@ enum NativeWorkflowChecks {
       guard let editor = field.currentEditor() as? NSTextView else { throw NativeSmoke.Failure(description: "Missing filename editor") }
       let stem = (name as NSString).deletingPathExtension
       try check(editor.selectedRange() == NSRange(location: 0, length: (stem as NSString).length), "Inline rename selects the filename stem and preserves the extension")
+      try checkSelectionAlignment(field, editor, context: "Icon rename")
       try check(!browser.collection.subviews.contains { $0 is NativeExpandedNameView }, "Inline rename removes expanded text")
       _ = browser.control(field, textView: editor, doCommandBy: #selector(NSResponder.cancelOperation(_:)))
       browser.collection.layoutSubtreeIfNeeded()
@@ -198,9 +326,47 @@ enum NativeWorkflowChecks {
     browser.collection.deselectAll(nil); browser.collection.layoutSubtreeIfNeeded()
     try check(!browser.collection.subviews.contains { $0 is NativeExpandedNameView }, "Deselecting collapses the complete filename")
     browser.closeTab(); try await until { !browser.loading && browser.directory.path == root.path }
+    browser.setGrouping(.none)
+    browser.setView(.details)
+    let detailEntry = browser.entries.first { !$0.isDirectory }!
+    browser.selectedPaths = [detailEntry.id]
+    browser.executeAction("rename")
+    let detailRow = browser.displayRows.firstIndex { $0.entry.map { browser.entries[$0].id == detailEntry.id } == true }!
+    guard let cell = browser.table.view(atColumn: nameColumn, row: detailRow, makeIfNecessary: false) as? NameCell,
+          let detailEditor = cell.nameLabel.currentEditor() as? NSTextView else {
+      throw NativeSmoke.Failure(description: "Missing Details rename editor")
+    }
+    try checkSelectionAlignment(cell.nameLabel, detailEditor, context: "Details rename")
+    let leading = cell.convert(detailEditor.bounds, from: detailEditor).minX
+    try check(abs(leading - (cell.icon.frame.maxX + 9)) < 0.5, "Details rename preserves the filename leading edge")
+    _ = browser.control(cell.nameLabel, textView: detailEditor, doCommandBy: #selector(NSResponder.cancelOperation(_:)))
     let sources = Array(browser.entries.filter { !$0.isDirectory }.prefix(2)).map(\.url)
     let form = EDBatchRenameForm(sources: sources)
     form.frame = NSRect(x: 0, y: 0, width: 720, height: 700)
+    let inputHost = NSView(frame: NSRect(x: 0, y: 0, width: 720, height: 700))
+    inputHost.addSubview(form)
+    let inputWindow = NSWindow(contentRect: inputHost.bounds, styleMask: [.titled], backing: .buffered, defer: false)
+    inputWindow.isReleasedWhenClosed = false
+    inputWindow.contentView = inputHost
+    defer { inputWindow.close() }
+    form.layoutSubtreeIfNeeded()
+    form.sourceName.selectText(nil)
+    guard let ruleEditor = form.sourceName.currentEditor() as? NSTextView else { throw NativeSmoke.Failure(description: "Missing batch rename editor") }
+    try checkSelectionAlignment(form.sourceName, ruleEditor, context: "Batch rename")
+    inputWindow.makeFirstResponder(nil)
+    for size in [10, 13, 24] {
+      ExplorerTypography.baseSize = CGFloat(size)
+      let identity = EDPropertyIdentity(title: "工作区 workspace", icon: nil, editable: true)
+      identity.frame = NSRect(x: 0, y: 0, width: 400, height: 61)
+      inputHost.addSubview(identity)
+      identity.layoutSubtreeIfNeeded()
+      identity.name.selectText(nil)
+      guard let editor = identity.name.currentEditor() as? NSTextView else { throw NativeSmoke.Failure(description: "Missing properties name editor") }
+      try checkSelectionAlignment(identity.name, editor, context: "Properties name at \(size) pt")
+      inputWindow.makeFirstResponder(nil)
+      identity.removeFromSuperview()
+    }
+    ExplorerTypography.configure(defaults)
     try check(!form.isValid, "Batch editor disables empty rules")
     form.prefix.stringValue = "New-"; form.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: form.prefix)); form.layoutSubtreeIfNeeded()
     try check(form.isValid && descendants(form).compactMap { ($0 as? NSTextField)?.stringValue }.contains { $0.contains(" → New-") }, "Batch editor previews source and destination names")
