@@ -71,6 +71,29 @@ enum AndroidMTPChecks {
     do { _ = try await cancelled.value; throw NSError(domain:"UnexpectedSuccess",code:1) }
     catch { try check(error is CancellationError, "Cancellation propagates to the transfer") }
     try check(!AndroidMTP.validName("..") && !AndroidMTP.validName("a/b") && !AndroidMTP.validName("x\0y"), "Device filenames cannot traverse local paths")
+    var cache = AndroidDirectoryCache(maximumBytes: 2048, maximumFolders: 2, freshness: 5, lifetime: 30)
+    let a = AndroidDirectoryCache.Key(device: phone.id, storage: 7, parent: 1)
+    let b = AndroidDirectoryCache.Key(device: phone.id, storage: 7, parent: 2)
+    let c = AndroidDirectoryCache.Key(device: phone.id, storage: 8, parent: 1)
+    cache.insert(items, for: a, now: 10)
+    try check(cache.snapshot(for: a, now: 11)?.items == items, "Cache preserves sorted items")
+    try check(cache.snapshot(for: a, now: 14)?.needsRefresh == false, "Fresh cache avoids USB")
+    try check(cache.snapshot(for: a, now: 15)?.needsRefresh == true, "Stale cache requests refresh")
+    try check(cache.snapshot(for: c, now: 15) == nil, "Cache separates storages")
+    cache.insert(items, for: b, now: 15)
+    _ = cache.snapshot(for: a, now: 16)
+    cache.insert(items, for: c, now: 16)
+    try check(cache.snapshot(for: b, now: 16) == nil && cache.snapshot(for: a, now: 16) != nil, "Cache evicts least recently used")
+    try check(cache.snapshot(for: a, now: 40) == nil, "Expired object IDs are discarded")
+    cache.removeAll()
+    try check(cache.folderCount == 0 && cache.estimatedBytes == 0, "Refresh clears cache")
+    for i in 0..<1000 { cache.insert(items, for: .init(device: phone.id, storage: 7, parent: UInt32(i)), now: 50) }
+    try check(cache.folderCount <= 2 && cache.estimatedBytes <= 2048, "Cache stays bounded")
+    var tiny = AndroidDirectoryCache(maximumBytes: 0)
+    tiny.insert(items, for: a)
+    try check(tiny.folderCount == 0, "Oversized listings are not retained")
+    cache.insert(items, for: a, now: 100)
+    try check(cache.snapshot(for: a, now: 99) == nil, "Clock rollback invalidates entries")
     print("AndroidMTPChecks: \(count) checks passed; synthetic transport only.")
   }
 }

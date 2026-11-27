@@ -61,8 +61,8 @@ enum ExplorerDialogs {
     form.field.selectText(nil)
   }
 
-  static func batchRename(in window: NSWindow, sources: [URL], submit: @escaping (BatchRenameOptions) -> Void) {
-    let form = EDBatchRenameForm(sources: sources)
+  static func batchRename(in window: NSWindow, sources: [URL], directories: [Bool], submit: @escaping (BatchRenameOptions) -> Void) {
+    let form = EDBatchRenameForm(sources: sources, directories: directories)
     let body = EDScrollingBody(); body.flow.padding = 0
     body.flow.add(form) { _ in (ExplorerTypography.rowHeight + 8) * 14 }
     let dialog = EDPresentation(parent: window, title: NL("批量重命名"), size: NSSize(width: max(560, ExplorerTypography.baseSize * 28), height: 640), body: body)
@@ -718,15 +718,17 @@ final class EDBatchRenameForm: EDView, NSTextFieldDelegate {
   private let startLabel = edLabel(NL("起始值"))
   private let widthLabel = edLabel(NL("位数"))
   private let sources: [URL]
+  private let directories: [Bool]
   private let originalSourceName: String
   private var fields: [ExplorerTextField] { [sourceName, prefix, suffix, find, replacement, sequenceStart, sequencePadding, fileExtension] }
   var onChange: (() -> Void)?
 
-  init(sources: [URL]) {
+  init(sources: [URL], directories: [Bool]? = nil) {
     self.sources = sources
+    let flags = directories ?? sources.map(\.hasDirectoryPath)
+    self.directories = flags
     if let source = sources.first,
-       let values = try? source.resourceValues(forKeys: [.isDirectoryKey]),
-       values.isDirectory != true,
+       flags.first == false,
        !source.pathExtension.isEmpty {
       originalSourceName = source.deletingPathExtension().lastPathComponent
     } else {
@@ -815,8 +817,11 @@ final class EDBatchRenameForm: EDView, NSTextFieldDelegate {
       preview.stringValue = NL("源文件名只能删除文字。")
     } else {
       do {
-        let names = try FileActions.batchRenamePreview(sources, options: options)
-        preview.stringValue = zip(sources, names).map { $0.lastPathComponent + " → " + $1 }.joined(separator: "\n")
+        // Bound text layout as well as avoiding network metadata on every keystroke.
+        let shown = Array(sources.prefix(100))
+        let names = try FileActions.batchRenamePreview(shown, directories: Array(directories.prefix(100)), options: options)
+        preview.stringValue = zip(shown, names).map { $0.lastPathComponent + " → " + $1 }.joined(separator: "\n")
+        if sources.count > shown.count { preview.stringValue += "\n" + NL("另有 {0} 个项目。", sources.count - shown.count) }
         previewValid = true
       } catch { preview.stringValue = error.localizedDescription; previewValid = false }
     }

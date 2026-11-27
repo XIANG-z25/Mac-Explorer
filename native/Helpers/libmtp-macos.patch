@@ -16,3 +16,32 @@
      /*
       * Some devices really love to get reset after being
       * disconnected. Again, since Windows never disconnects
+--- a/src/libmtp.c
++++ b/src/libmtp.c
+@@ -4637,3 +4637,8 @@
+-    // Get metadata for one file, if it fails, try next file
+-    file = LIBMTP_Get_Filemetadata(device, currentHandles.Handler[i]);
+-    if (file == NULL)
++    /* AndroidReader: folder browsing does not need media properties or size.
++     * Keep the normal metadata path for files (including 64-bit sizes), and
++     * honour ptp_object_want's device-specific ObjectInfo overrides. */
++    PTPObject *ob = NULL;
++    ret = ptp_object_want(params, currentHandles.Handler[i],
++                          PTPOBJECT_OBJECTINFO_LOADED, &ob);
++    if (ret != PTP_RC_OK || ob == NULL) {
++      add_ptp_error_to_errorstack(device, ret, "directory ObjectInfo failed");
+@@ -4640,0 +4646,14 @@
++    }
++    if (map_ptp_type_to_libmtp_type(ob->oi.ObjectFormat) == LIBMTP_FILETYPE_FOLDER) {
++      file = LIBMTP_new_file_t();
++      if (file == NULL) continue;
++      file->item_id = ob->oid;
++      file->parent_id = ob->oi.ParentObject;
++      file->storage_id = ob->oi.StorageID;
++      file->filename = ob->oi.Filename ? strdup(ob->oi.Filename) : NULL;
++      file->filetype = LIBMTP_FILETYPE_FOLDER;
++      file->modificationdate = ob->oi.ModificationDate;
++    } else {
++      file = LIBMTP_Get_Filemetadata(device, currentHandles.Handler[i]);
++      if (file == NULL) continue;
++    }

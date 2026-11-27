@@ -1,3 +1,9 @@
+> **Mac Explorer Daily · 个人维护分支（1.12.0）**
+>
+> 基于 [qixiaoyu27/Mac-Explorer 1.10.1](https://github.com/qixiaoyu27/Mac-Explorer/tree/v1.10.1)，保留个人版功能、独立应用标识和设置。由 [XIANG-z25](https://github.com/XIANG-z25) 维护；感谢上游作者及贡献者。
+>
+> [下载个人版 DMG / ZIP](https://github.com/XIANG-z25/Mac-Explorer/releases/latest) · [本次更新](docs/daily-1.12.0.md) · 源码分支：`zx/daily-native`。下方界面介绍来自上游，个人版差异以更新说明为准。
+
 <div align="center">
   <img src="design/icon-selected-mirrored.png" width="88" alt="Mac Explorer 图标">
   <h1>Mac Explorer</h1>
@@ -7,7 +13,7 @@
   <p>
     <a href="#下载与安装"><strong>一键安装</strong></a> &nbsp;·&nbsp;
     <a href="#日常所需触手可及">功能一览</a> &nbsp;·&nbsp;
-    <a href="https://github.com/qixiaoyu27/Mac-Explorer/releases">更新记录</a>
+    <a href="https://github.com/XIANG-z25/Mac-Explorer/releases">更新记录</a>
   </p>
   <p><sub>macOS 13 及以上 · Apple Silicon（M 系列）· 免费开源</sub></p>
 </div>
@@ -24,33 +30,20 @@
 
 ## 下载与安装
 
-打开「终端」，执行：
+1. 前往 [个人版下载页面](https://github.com/XIANG-z25/Mac-Explorer/releases/latest)，下载 **Mac-Explorer-Daily-1.12.0-mac-arm64.dmg**。
+2. 退出旧版，打开 DMG，把 **Mac Explorer Daily.app** 拖入「应用程序」并替换同名应用，保留 Daily 的偏好设置。
+3. 安装包采用 ad-hoc 临时签名，未经 Apple 公证。如系统阻止打开，请确认下载来源后在「系统设置 → 隐私与安全性」允许打开。
+
+支持 Apple Silicon（M 系列）和 macOS 13+。附件同时提供 ZIP 与 `SHA256SUMS.txt`。个人版请使用本仓库的下载包；上游的一键安装器安装的是上游应用。
+
+个人版构建与打包：
 
 ```sh
-mac_explorer_installer=$(curl -fsSL https://raw.githubusercontent.com/qixiaoyu27/Mac-Explorer/refs/heads/main/native/scripts/install-native.sh) && /bin/bash -c "$mac_explorer_installer" -- --install-and-open
+python3 -I native/scripts/build.py --personal
+python3 -I native/scripts/package-release.py --personal --app 'native/output/personal/Mac Explorer Daily.app'
 ```
 
-终端会提示 Mac Explorer 未经 Apple 公证。输入 `y` 并按回车，安装器会校验下载包，只移除本次安装的 Mac Explorer 的下载隔离标记，然后自动打开应用。已装同版本但打不开时，也可以运行这条命令重新安装。更新前请先退出应用，个人文件和偏好设置会保留。
-
-<sub>支持 macOS 13 及以上 · Apple Silicon（M 系列）。</sub>
-
-<details>
-<summary>也可以手动安装 DMG</summary>
-
-1. 前往 [下载页面](https://github.com/qixiaoyu27/Mac-Explorer/releases/latest)，选择 **DMG** 安装包。
-2. 打开 DMG，将 **Mac Explorer** 拖入 **Applications（应用程序）**。更新时请先退出旧版本。
-3. 打开应用。若 macOS 因未公证而阻止打开，请确认下载来源后，在「系统设置 → 隐私与安全性」中允许打开。
-
-</details>
-
-<details>
-<summary>从早期版本升级</summary>
-
-从早期 Electron 版升级时，运行上方命令即可。旧版应用内更新器无法自动完成此次迁移。
-
-个人文件不受影响。外观、快捷键和窗口会话等偏好需要重新设置；收藏夹可通过「设置 → 常规 → 从 Finder 导入收藏夹」重新导入。
-
-</details>
+个人版版本号在 `native/PERSONAL_VERSION`，普通上游构建仍使用 `native/VERSION`。安卓组件构建需要 `pkgconf`，首次构建会下载并校验固定版本的 libmtp/libusb。
 
 ## 日常所需，触手可及
 

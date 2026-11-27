@@ -1177,8 +1177,8 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
     commands["cut"]?.isEnabled = count > 0 && !busy && !viewingTrash; commands["copy"]?.isEnabled = count > 0 && !busy
     commands["paste"]?.isEnabled = (!clipboard.isEmpty || filePasteboard.canReadObject(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true])) && !busy && writable
     let network = networkDeletionHint
-    commands["rename"]?.isEnabled = count == 1 && !busy && !viewingTrash; commands["trash"]?.isEnabled = count > 0 && !busy && !viewingTrash && !network
-    commands["trash"]?.toolTip = network ? NL("暂不支持删除网络项目。") : NL("删除") + " " + shortcutHint("trash")
+    commands["rename"]?.isEnabled = count == 1 && !busy && !viewingTrash; commands["trash"]?.isEnabled = count > 0 && !busy && !viewingTrash
+    commands["trash"]?.toolTip = network ? NL("移入 NAS 回收站") : NL("删除") + " " + shortcutHint("trash")
     commands["airdrop"]?.isEnabled = count > 0 && !busy; commands["terminal"]?.isEnabled = directory.isFileURL && !busy
     commands["undo"]?.isEnabled = !undoChanges.isEmpty && !busy; commands["refresh"]?.isEnabled = !busy
     commands["batchRename"]?.isEnabled = count >= 2 && !busy && !viewingTrash
@@ -1779,7 +1779,7 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
         ExplorerMenuItem(title: NL("Finder 标签…"), icon: "tag", enabled: !busy, action: { [weak self] in self?.editFinderTags() }),
         ExplorerMenuItem(title: NL("重命名"), icon: "rename", enabled: chosen.count == 1 && !busy, shortcut: shortcutHint("rename"), action: { [weak self] in self?.renameSelected() }),
         ExplorerMenuItem(title: NL("批量重命名"), icon: "rename", enabled: chosen.count >= 2 && !busy, action: { [weak self] in self?.batchRenameSelected() }),
-        ExplorerMenuItem(title: deletionTitle, icon: "trash", enabled: !busy && !networkDeletionHint, shortcut: shortcutHint("trash"), action: { [weak self] in self?.trashSelected() })]
+        ExplorerMenuItem(title: deletionTitle, icon: "trash", enabled: !busy, shortcut: shortcutHint("trash"), action: { [weak self] in self?.trashSelected() })]
       if first.isDirectory, !isCloudLocation(first.url) {
         items.append(ExplorerMenuItem(title: pinnedPaths.contains(first.url.path) ? NL("从快速访问取消固定") : NL("固定到快速访问"), icon: "pin", divider: true, action: { [weak self] in self?.togglePin(first.url) }))
       }
@@ -2010,15 +2010,19 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
   }
   private func batchRenameSelected() {
     guard !busy, !viewingTrash, let window = view.window else { return }
-    let sources = selectedEntries().map(\.url)
+    let selection = selectedEntries()
+    let sources = selection.map(\.url)
     guard sources.count >= 2 else { return }
-    ExplorerDialogs.batchRename(in: window, sources: sources) { [weak self] options in
+    ExplorerDialogs.batchRename(in: window, sources: sources, directories: selection.map(\.isDirectory)) { [weak self] options in
       Task { [weak self] in
+        guard let self, !self.busy else { return }
+        self.busy = true; self.message = NL("正在检查重命名…"); self.updateStatus()
         let result = await Task.detached { Result { try FileActions.batchRenameConflicts(sources, options: options) } }.value
+        self.busy = false
         guard case .success(let conflicts) = result else {
-          if case .failure(let error) = result { self?.operationError = error.localizedDescription; self?.render() }; return
+          if case .failure(let error) = result { self.operationError = error.localizedDescription; self.render() }; return
         }
-        guard let self else { return }
+        self.updateStatus()
         if conflicts.isEmpty {
           self.runOperation { FileActions.batchRename(sources, options: options) }
           return
@@ -2098,10 +2102,40 @@ final class BrowserController: NSViewController, NSMenuItemValidation, NSTableVi
     selectedHiddenNetwork = selectedHiddenEntries.contains { networkLocation(entries[$0].url) == true }
   }
   private var networkDeletionHint: Bool { selectedHiddenNetwork || !selectedNetworkRows.isEmpty }
-  private var deletionTitle: String { NL("删除") }
+  private var deletionTitle: String { networkDeletionHint ? NL("移入 NAS 回收站") : NL("删除") }
+  private func recycleNASSelection(_ sources: [URL], window: NSWindow) {
+    busy = true; message = NL("正在检查 NAS 回收站…"); operationError = nil; updateStatus()
+    Task { @MainActor [weak self, weak window] in
+      let prepared = await Task.detached { Result { try NASRecycle.prepare(sources) } }.value
+      guard let self else { return }
+      self.busy = false; self.message = ""; self.updateStatus()
+      guard let window, !self.stopped else { return }
+      switch prepared {
+      case .failure(let error): self.operationError = error.localizedDescription; self.render()
+      case .success(let plans):
+        let shown = sources.prefix(5).map(\.lastPathComponent).joined(separator: "\n")
+        ExplorerDialogs.confirm(in: window, title: NL("移入 NAS 回收站"),
+          detail: NL("将 {0} 个项目移入 NAS 回收站？", sources.count) + "\n" + shown,
+          confirmTitle: NL("移入 NAS 回收站")) { [weak self] in
+          guard let self else { return }
+          self.readClipboard(); let version = self.clipboardChange
+          self.runAsyncOperation(selectResults: false, completion: { [weak self] result in
+            guard let self else { return }
+            let removed = Set(result.changes.compactMap { $0.source?.path })
+            if self.clipboardChange == version, self.filePasteboard.changeCount == version {
+              self.clipboard.removeAll { removed.contains($0.path) }
+              if self.clipboard.isEmpty { self.isCut = false }
+              if !removed.isEmpty { self.writeClipboard() }
+            }
+          }) { await Task.detached { NASRecycle.move(plans) }.value }
+        }
+      }
+    }
+  }
   private func trashSelected() {
     let sources = selectedEntries().map(\.url)
     guard !busy, !sources.isEmpty, !viewingTrash, let window = view.window else { return }
+    if networkDeletionHint { recycleNASSelection(sources, window: window); return }
     let origin = tabs[activeTab].id, originDirectory = directory
     let perform: ([PreparedDeletion]) -> Void = { [weak self, weak window] plans in
       guard let self, let window else { return }

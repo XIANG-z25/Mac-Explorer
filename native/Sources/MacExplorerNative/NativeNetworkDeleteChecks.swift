@@ -49,7 +49,7 @@ enum NativeNetworkDeleteChecks {
     }
     let remote = try file("remote-file"), local = try file("local-file")
     try await select([remote]); browser.executeAction("cut"); let version = browser.filePasteboard.changeCount
-    try check(browser.contextItems().first { $0.title == NL("删除") }?.enabled == false, "Known network selections disable the context-menu Delete action")
+    try check(browser.contextItems().first { $0.title == NL("移入 NAS 回收站") }?.enabled == true, "Known network selections offer recoverable NAS recycling")
     try await rejected([remote])
     try check(recycleCalls == 0 && browser.filePasteboard.changeCount == version, "Keyboard deletion cannot bypass the policy or consume the clipboard")
     try await rejected([local, remote]); try check(recycleCalls == 0, "Mixed selections stop before moving any local item")

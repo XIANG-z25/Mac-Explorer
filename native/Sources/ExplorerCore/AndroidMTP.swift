@@ -8,7 +8,7 @@ public struct AndroidStorage: Decodable, Sendable {
   public let id: UInt32
   public let name: String
 }
-public struct AndroidItem: Decodable, Sendable {
+public struct AndroidItem: Decodable, Sendable, Equatable {
   public let id: UInt32
   public let name: String
   public let directory: Bool

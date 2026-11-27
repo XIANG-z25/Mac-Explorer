@@ -342,6 +342,18 @@ enum NativeWorkflowChecks {
     _ = browser.control(cell.nameLabel, textView: detailEditor, doCommandBy: #selector(NSResponder.cancelOperation(_:)))
     let sources = Array(browser.entries.filter { !$0.isDirectory }.prefix(2)).map(\.url)
     let form = EDBatchRenameForm(sources: sources)
+    let offlineForm = EDBatchRenameForm(sources: [URL(fileURLWithPath: "/Volumes/offline-nas/a.mp4"), URL(fileURLWithPath: "/Volumes/offline-nas/Folder.1")], directories: [false, true])
+    offlineForm.prefix.stringValue = "New-"
+    offlineForm.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification))
+    try check(offlineForm.isValid, "Batch rename form previews offline NAS items without filesystem access")
+    let previousSelection = browser.selectedPaths
+    browser.selectedPaths = Set(sources.map(\.path))
+    browser.deletionNetworkLocation = { _ in true }
+    browser.updateMode(persist: false)
+    try check(browser.contextItems().contains { $0.title == NL("移入 NAS 回收站") && $0.enabled }, "NAS context menu offers recoverable recycling")
+    browser.deletionNetworkLocation = nil
+    browser.selectedPaths = previousSelection
+    browser.updateMode(persist: false)
     form.frame = NSRect(x: 0, y: 0, width: 720, height: 700)
     let inputHost = NSView(frame: NSRect(x: 0, y: 0, width: 720, height: 700))
     inputHost.addSubview(form)

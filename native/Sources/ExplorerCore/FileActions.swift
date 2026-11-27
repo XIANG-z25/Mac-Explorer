@@ -2,7 +2,7 @@ import Foundation
 import Darwin
 
 public enum FileActionKind: Sendable {
-  case copy, move, create, trash
+  case copy, move, create, trash, nasRecycle
 }
 
 public struct FileActionChange: Sendable {
@@ -145,9 +145,9 @@ public enum FileActions {
     let caseOnly = source.lastPathComponent.compare(name, options: .caseInsensitive) == .orderedSame
     if let destinationInfo = try entryInfo(destination) {
       let sourceInfo = try requiredInfo(source)
-      // Same inode alone is insufficient: two distinct hard links must still collide.
-      let names = try FileManager.default.contentsOfDirectory(atPath: source.deletingLastPathComponent().path)
-      guard caseOnly, sameIdentity(sourceInfo, destinationInfo), !names.contains(name) else {
+      // Do not enumerate a NAS directory to distinguish a case alias from a hard
+      // link. The exclusive second rename below detects a real, distinct entry.
+      guard caseOnly, sameIdentity(sourceInfo, destinationInfo) else {
         throw failure(NL("目标已存在：{0}", destination.path))
       }
     }
@@ -155,20 +155,20 @@ public enum FileActions {
     if caseOnly {
       let temporary = source.deletingLastPathComponent()
         .appendingPathComponent(".explorer-rename-\(UUID().uuidString)")
-      try moveExclusively(source, to: temporary)
+      try renameEntryExclusively(source, to: temporary)
       do {
-        try moveExclusively(temporary, to: destination)
+        try renameEntryExclusively(temporary, to: destination)
       } catch {
         let renameError = error
         do {
-          try moveExclusively(temporary, to: source)
+          try renameEntryExclusively(temporary, to: source)
         } catch {
           throw failure(NL("重命名失败：{0}；还原失败：{1}。恢复位置：{2}", renameError.localizedDescription, error.localizedDescription, temporary.path))
         }
         throw renameError
       }
     } else {
-      try moveExclusively(source, to: destination)
+      try renameEntryExclusively(source, to: destination)
     }
     return FileActionChange(source: source, destination: destination, kind: .move)
   }
@@ -190,7 +190,7 @@ public enum FileActions {
     for (index, source) in sources.enumerated() {
       let source = try existingURL(source)
       let sourceInfo = try requiredInfo(source)
-      let name = try batchRenameName(source, index: index, options: options)
+      let name = try batchRenameName(source, index: index, options: options, directory: sourceInfo.st_mode & S_IFMT == S_IFDIR)
       let key = normalizedName(name), sourceKey = normalizedName(source.lastPathComponent)
       let destination = parent.appendingPathComponent(name)
       let duplicatesProposedTarget = !proposed.insert(key).inserted
@@ -225,8 +225,8 @@ public enum FileActions {
       for (index, source) in sources.enumerated() {
         let source = try existingURL(source)
         try validateModificationSource(source)
-        let isDirectory = (try source.resourceValues(forKeys: [.isDirectoryKey])).isDirectory == true
-        var name = try batchRenameName(source, index: index, options: options)
+        let isDirectory = try requiredInfo(source).st_mode & S_IFMT == S_IFDIR
+        var name = try batchRenameName(source, index: index, options: options, directory: isDirectory)
         try validateName(name)
         var key = normalizedName(name)
         let sourceKey = normalizedName(source.lastPathComponent)
@@ -274,9 +274,17 @@ public enum FileActions {
   /// Preview uses the same transform as execution and deliberately does not
   /// touch the filesystem or reserve names.
   public static func batchRenamePreview(_ sources: [URL], options: BatchRenameOptions) throws -> [String] {
+    let directories = try sources.map { try requiredInfo($0).st_mode & S_IFMT == S_IFDIR }
+    return try batchRenamePreview(sources, directories: directories, options: options)
+  }
+
+  /// UI callers supply directory flags from the listing they already hold.
+  /// This overload is pure: no stat, URL resource lookup, directory read or media access.
+  public static func batchRenamePreview(_ sources: [URL], directories: [Bool], options: BatchRenameOptions) throws -> [String] {
+    guard sources.count == directories.count else { throw failure(NL("文件清单已变化，请重新选择。")) }
     if let extensionOverride = options.extensionOverride { _ = try normalizedExtension(extensionOverride) }
     return try sources.enumerated().map { index, source in
-      let name = try batchRenameName(source, index: index, options: options)
+      let name = try batchRenameName(source, index: index, options: options, directory: directories[index])
       try validateName(name)
       return name
     }
@@ -305,8 +313,7 @@ public enum FileActions {
     return chunks
   }
 
-  private static func batchRenameName(_ source: URL, index: Int, options: BatchRenameOptions) throws -> String {
-    let directory = (try source.resourceValues(forKeys: [.isDirectoryKey])).isDirectory == true
+  private static func batchRenameName(_ source: URL, index: Int, options: BatchRenameOptions, directory: Bool) throws -> String {
     let originalExtension = directory ? "" : source.pathExtension
     var stem = directory || originalExtension.isEmpty ? source.lastPathComponent : source.deletingPathExtension().lastPathComponent
     for text in options.removeTexts where !text.isEmpty { stem = stem.replacingOccurrences(of: text, with: "") }
@@ -559,6 +566,9 @@ public enum FileActions {
           throw failure(NL("项目已被其他文件替换，无法撤销。"))
         }
         switch change.kind {
+        case .nasRecycle:
+          let inverse = try NASRecycle.reverse(change)
+          succeeded.append(inverse.destination); inverses.append(inverse)
         case .copy, .create:
           // Undo never deletes: even a subsequently modified copy is recoverable from Trash.
           let result = trash([change.destination], testTrash: testTrash)
@@ -729,6 +739,25 @@ public enum FileActions {
 
   private static func moveExclusively(_ source: URL, to destination: URL) throws {
     _ = try VerifiedTransfer.perform(source, to: destination, move: true)
+  }
+
+  /// A name change within a directory must never become a copy/delete transfer.
+  /// RENAME_EXCL makes a concurrent destination creation fail without overwriting it.
+  private static func renameEntryExclusively(_ source: URL, to destination: URL) throws {
+    guard source.deletingLastPathComponent().standardizedFileURL == destination.deletingLastPathComponent().standardizedFileURL else {
+      throw failure(NL("重命名不能跨文件夹移动项目。"))
+    }
+    let result = source.path.withCString({ from in destination.path.withCString { to in
+      renameatx_np(AT_FDCWD, from, AT_FDCWD, to, UInt32(RENAME_EXCL))
+    } })
+    if result == 0 { return }
+    let code = errno
+    guard code == ENOTSUP || code == ENOSYS else { throw posixError(destination, code: code) }
+    // Some mounted SMB servers reject Darwin's RENAME_EXCL flag. Foundation's
+    // same-directory move is the system compatibility path, with a documented
+    // existing-destination error. Never enter VerifiedTransfer's copy fallback.
+    try requireAbsent(destination)
+    try FileManager().moveItem(at: source, to: destination)
   }
 
   private static func isCollision(_ error: Error) -> Bool {
